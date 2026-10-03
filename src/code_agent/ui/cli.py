@@ -1,0 +1,68 @@
+"""交互层(H):命令行入口。
+
+M0 只实现两个最必要的开关:
+
+- ``--version``;
+- ``-p/--prompt``:无界面单次模式,把模型的回复流式打印到终端。
+
+这个模式在 M1–M4 会是主要的调试与验收入口 —— 没有它,每次验证主循环都要等 TUI 起来。
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import typer
+from rich.console import Console
+
+from code_agent import __version__
+from code_agent.config import Settings, load_settings
+from code_agent.llm.client import LLMClient
+
+app = typer.Typer(add_completion=False, help="code_agent —— 学习型编程 Agent")
+console = Console()
+
+
+def _echo_version(value: bool) -> None:
+    """``--version`` 的回调(eager:在其它参数校验之前就执行)。"""
+    if value:
+        console.print(f"code-agent {__version__}")
+        raise typer.Exit()
+
+
+@app.command()
+def ask(
+    prompt: str | None = typer.Option(None, "-p", "--prompt", help="一句话任务(无界面单次模式)"),
+    version: bool = typer.Option(
+        False, "--version", callback=_echo_version, is_eager=True, help="显示版本号后退出"
+    ),
+) -> None:
+    """执行一次任务。M0 阶段仅把 prompt 发给模型并流式打印回复。"""
+    if not prompt:
+        console.print('[yellow]用法:[/yellow] code-agent -p "你的任务"')
+        raise typer.Exit(code=1)
+    settings = load_settings()
+    raise typer.Exit(code=asyncio.run(_run_once(prompt, settings)))
+
+
+async def _run_once(prompt: str, settings: Settings) -> int:
+    """单次执行:发给模型并流式打印。返回进程退出码。"""
+    client = LLMClient(settings)
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        async for text in client.astream_text(messages):
+            console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+    except Exception as exc:  # M0 先直接暴露错误,便于定位配置问题
+        console.print(f"\n[bold red]调用失败:[/bold red] {exc}")
+        return 1
+    console.print()
+    return 0
+
+
+def main() -> None:
+    """``pyproject.toml`` 中 ``[project.scripts]`` 指向的入口。"""
+    app()
+
+
+if __name__ == "__main__":
+    main()
