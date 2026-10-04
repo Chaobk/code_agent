@@ -50,7 +50,7 @@ async def _run_once(prompt: str, settings: Settings) -> int:
     client = LLMClient(settings)
     messages = [{"role": "user", "content": prompt}]
     try:
-        async for text in client.astream_text(messages):
+        async for text in client.stream_turn(messages):
             console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
     except Exception as exc:  # M0 先直接暴露错误,便于定位配置问题
         console.print(f"\n[bold red]调用失败:[/bold red] {exc}")
