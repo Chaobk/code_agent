@@ -3,9 +3,10 @@
 M0 只实现两个最必要的开关:
 
 - ``--version``;
-- ``-p/--prompt``:无界面单次模式,把模型的回复流式打印到终端。
+- ``-p/--prompt``:命令行单次模式,把模型的回复流式打印到终端。
 
-这个模式在 M1–M4 会是主要的调试与验收入口 —— 没有它,每次验证主循环都要等 TUI 起来。
+``-p`` 模式用于自动化调试与验收。M5 再接入终端多轮会话;当前无参数运行
+仍提示用法并退出。参数入口不承载会话、权限判断或 agent 决策。
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def _echo_version(value: bool) -> None:
 
 @app.command()
 def ask(
-    prompt: str | None = typer.Option(None, "-p", "--prompt", help="一句话任务(无界面单次模式)"),
+    prompt: str | None = typer.Option(None, "-p", "--prompt", help="一句话任务(命令行单次模式)"),
     version: bool = typer.Option(
         False, "--version", callback=_echo_version, is_eager=True, help="显示版本号后退出"
     ),

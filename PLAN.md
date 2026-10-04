@@ -23,15 +23,15 @@
 | Q4 | 模型供应商 | **DeepSeek**(`deepseek/deepseek-chat` 常规、`deepseek/deepseek-reasoner` 复杂规划),模型层做成薄抽象便于更换 |
 | 追加 | 模型接入层 | **litellm**——统一多供应商调用,免去自写各家适配;模型标识带前缀(如 `deepseek/deepseek-chat`),密钥按前缀自动读环境变量 |
 | 追加 | 代码组织 | **按能力域物理分包**(见 §4),`core/` 只做编排,不承载具体能力 |
-| Q5/Q9 | 交互形态 | **Textual TUI** + 保留 **`-p` 无界面单次模式** |
+| Q5/Q9 | 交互形态 | **纯命令行**:保留 `-p` 单次模式,M5 增加直接运行 `code-agent` 的多轮交互会话;TUI 暂缓,不列入当前里程碑 |
 | Q6 | MVP 工具集 | `read_file` / `write_file` / `edit_file` / `run_shell` / `list_dir` / `glob` / `search`(调用本机 ripgrep);git 不单独做工具,由 `run_shell` 直接跑 |
 | Q7 | 接口与工具调用 | 走 **Responses API**(`litellm.aresponses`,不用 chat.completions):`input` 为 item 序列、工具定义扁平(`type=function`)、流式为语义事件;原生 function calling + 流式 |
-| Q8 | 权限与护栏 | **cwd 收窄** + **危险命令黑名单/确认**(`-p` 下危险命令直接拒绝) |
+| Q8 | 权限与护栏 | **cwd 收窄** + **危险命令黑名单/确认**;M3 先拒绝危险命令,M5 接入终端文字确认(默认拒绝);`-p` 与非终端输入始终拒绝危险命令 |
 | Q11 | 主循环形态 | 单 agent **顺序 ReAct** 起步;架构上支持**多种模式**,后续加 plan 模式 |
 | Q12 | 上下文管理 | 起步用"保留 system + 最近 N 轮 + 丢弃最老工具输出";**文件内容由 agent 按需 `read_file` 拉取,永不自动注入** |
-| Q13 | TUI 与异步 | 主循环跑在 asyncio task;shell 用 `create_subprocess_exec`、文件 I/O 用 `asyncio.to_thread`;事件队列把 token 流/工具调用/结果推给界面 |
+| Q13 | 命令行与异步 | 主循环使用 asyncio;shell 用 `create_subprocess_exec`、文件 I/O 与阻塞式终端输入用 `asyncio.to_thread`;交互层消费事件流,将文本增量、工具调用与结果输出到终端 |
 | Q14 | 工程规范 | uv 管理;`src/` 布局;依赖见 §6;密钥走环境变量 `DEEPSEEK_API_KEY` |
-| Q15 | 测试策略 | 三层:工具层纯函数单测 + `FakeLLM` 驱动循环测试 + TUI 轻量冒烟;真模型只手动 smoke |
+| Q15 | 测试策略 | 三层:工具层纯函数单测 + `FakeLLM` 驱动循环测试 + CLI 集成测试(输入/输出、退出、中断与确认);真模型只手动 smoke |
 | Q17 | mode 抽象时机 | **M1 就留极薄 `AgentMode` 协议**(只暴露"生成下一轮请求"与"是否结束"),plan 模式后续加实现 |
 | Q19 | 协作节奏 | **每个里程碑完成后停下**,展示判据运行结果,用户确认后再继续 |
 | Q21 | 记忆管理深度 | 会话内工作记忆 **+ 跨会话长期记忆**;召回先用"文件 + rg 关键词",**不引向量库** |
@@ -49,7 +49,7 @@
 | E | 规划与模式(ReAct / plan-execute / 多模式可插拔) | `modes/` |
 | F | 执行与验证(shell、跑测试、自验证循环) | `tools/builtin/`(执行端) |
 | G | 安全与权限(cwd 收窄、危险命令拦截、确认、审计) | `safety/` |
-| H | 交互层(`-p` 模式、TUI、流式渲染、中断、纠偏) | `ui/` |
+| H | 交互层(`-p` 单次模式、命令行多轮会话、终端输出、中断、文字确认) | `ui/` |
 | I | 可观测与评测(轨迹 JSONL、回放、成本报表、eval) | `tracing/` |
 | J | 工程与分发(uv 项目、配置、文档、打包) | 项目根 + `config.py` |
 
@@ -69,7 +69,7 @@ code_agent/
 │   ├── core/
 │   │   └── agent.py           # 编排器:串起 llm / modes / tools / context / memory / tracing
 │   ├── llm/
-│   │   └── client.py          # litellm 封装:acompletion + stream + tools + 用量统计
+│   │   └── client.py          # litellm 封装:aresponses + 流式事件 + tools + 用量统计
 │   ├── modes/
 │   │   ├── base.py            # AgentMode 协议(薄接缝)
 │   │   ├── react.py           # M1 实现
@@ -90,8 +90,10 @@ code_agent/
 │   ├── tracing/
 │   │   └── jsonl.py           # M4:轨迹落盘与回放
 │   └── ui/
-│       ├── cli.py             # 入口:`--version`、`-p`
-│       └── tui.py             # M5:Textual 界面
+│       ├── cli.py             # 参数解析、--version、-p;M5 分发到交互会话
+│       ├── repl.py            # M5:终端多轮输入、退出与中断
+│       ├── render.py          # M1:消费事件并输出文本、工具调用与结果
+│       └── prompts.py         # M5:终端文字确认(默认拒绝)
 └── tests/
 ```
 
@@ -99,7 +101,8 @@ code_agent/
 
 1. 各能力子包之间**不互相 import**,只共享 `events.py` 里的数据模型。
 2. 所有跨能力的连接只发生在 `core/agent.py`。
-3. `llm/` 不认识工具与模式;`tools/` 不认识模型与界面;`ui/` 只消费事件、不做决策。
+3. `llm/` 不认识工具与模式;`tools/` 不认识模型与交互层;`ui/` 负责终端输入、输出与确认,不做 agent 决策。
+4. `ui/repl.py` 只维护终端交互流程;消息历史由 `context/` 管理,权限判断由 `safety/` 管理,能力连接仍由 `core/agent.py` 完成。
 
 这样后面替换任一能力(换模型库、换上下文策略、加 plan 模式、接 MCP)都不需要动别的包。
 
@@ -127,6 +130,7 @@ code_agent/
 - `context/history.py`:会话状态与消息历史
 - `tools/registry.py` + `tools/spec.py`:工具注册与 schema 生成
 - 只读工具:`read_file`(带行号/偏移)、`list_dir`、`glob`、`search`(rg)
+- `ui/render.py`:实现事件终端输出;CLI 通过核心编排入口执行任务,替换 M0 的直接模型调用
 - 刹车:最大步数、单轮工具调用上限、连续无进展中止
 - **判据**:在靶子仓库里问"这个项目是做什么的",它能自主读文件并答对
 
@@ -140,7 +144,8 @@ code_agent/
 ### M3 安全与权限护栏 〔G〕
 
 - `safety/policy.py`:cwd 强制收窄在指定仓库内
-- 危险命令黑名单/拦截(`-p` 下直接拒绝;TUI 下弹确认)
+- 危险命令黑名单/拦截:M3 阶段统一拒绝;M5 在交互会话接入文字确认,`-p` 与非终端输入始终拒绝
+- 确认由交互层采集,安全策略仍在 `safety/` 中判断;空输入、EOF 或中断均不得授权执行
 - 审计日志留痕
 - **判据**:越界路径被拒;`rm -rf` 类命令被拦
 
@@ -152,18 +157,24 @@ code_agent/
 - 召回:先用"文件 + rg 关键词",不引向量库
 - **判据**:关掉进程后 `--resume` 能继续,并记得改过哪些文件
 
-### M5 Textual TUI 〔H + G 确认弹窗〕
+### M5 命令行多轮会话 〔H + G 文字确认〕
 
-- `ui/tui.py`:流式渲染、工具调用可视化、危险命令确认弹窗
-- 可中断当前步、可中途纠偏
-- **判据**:在 TUI 里完整跑一遍 M2 的任务
+- `ui/cli.py`:无 `-p` 时进入交互会话;`-p` 继续执行单次任务并退出
+- `ui/repl.py`:逐轮读取任务,复用核心会话;支持 `/exit` 与 EOF 退出
+- `ui/render.py`:在终端输出流式文本、工具调用、结果和错误,不维护全屏布局
+- `ui/prompts.py`:危险操作文字确认,默认拒绝;`-p` 或非终端输入不得等待确认
+- Ctrl+C 取消当前任务并回到输入提示;用户可在下一轮补充或纠正要求
+- 增加 CLI 集成测试,覆盖多轮输入、退出、中断、确认与非交互拒绝
+- **判据**:在同一命令行会话完成 M2 任务并继续追问;拒绝确认时不执行危险操作;`-p` 路径仍可自动化运行
+
+TUI 暂缓:当前不保留专用模块或引入 Textual;以后需要时单独制定里程碑。
 
 ### M6 上下文深化 + 模式扩展 〔B + E + I 成本〕
 
 - 裁剪策略抽成**可替换接口**(默认"丢最老工具输出")
 - token 预算与成本报表(litellm 自带成本计算可用)
 - prompt 模板版本化
-- `modes/plan.py`:**plan-execute** 模式,界面展示/确认计划
+- `modes/plan.py`:**plan-execute** 模式,在终端展示计划;交互会话文字确认后执行,`-p` 或非终端输入遇到需要确认的计划时拒绝执行并退出
 - **判据**:配置切换 mode 可跑通;plan 模式能先出计划再执行
 
 ### M7 评测与打磨 〔I + J〕
@@ -175,7 +186,7 @@ code_agent/
 ## 6. 工程约定
 
 - **依赖清单**:
-  - 运行时:`litellm`(模型接入)、`pydantic` + `pydantic-settings`(数据与配置)、`typer` + `rich`(CLI/输出)、`textual`(M5 才加)
+  - 运行时:`litellm`(模型接入)、`pydantic` + `pydantic-settings`(数据与配置)、`typer` + `rich`(命令行参数与终端输出);当前命令行方案不引入 Textual
   - 开发:`pytest`、`pytest-asyncio`、`ruff`
   - 刻意不引入:`openai`(litellm 已内含)、`tenacity`(由 litellm 的 `num_retries` 覆盖重试)
   - litellm 版本下限参照本机 `mini-swe-agent` 的锁定:`>=1.75.5`,并排除被投毒版本 `1.82.7` / `1.82.8`
@@ -196,7 +207,7 @@ code_agent/
 - **每步流程**:Codex 给出「规格 + 接口/空壳 + 一个失败的测试」→ 用户写实现 →
   Codex 评审、跑测试、指出问题 → 通过后进入下一个里程碑。
 - **不替用户写的(核心)**:agent 主循环与编排、模式实现、工具执行、上下文裁剪、
-  记忆读写、安全策略、TUI 交互逻辑。
+  记忆读写、安全策略、命令行会话与确认逻辑。
 - **可以替用户写的(非核心)**:pyproject/依赖/ruff/pytest 配置、包骨架与占位、
   README、测试用例,以及机械性的样板代码。
 - 每个里程碑完成后暂停并展示判据,用户确认后继续(Q19)。

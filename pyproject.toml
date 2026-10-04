@@ -1,7 +1,7 @@
 [project]
 name = "code-agent"
 version = "0.0.1"
-description = "学习型编程 Agent:ReAct 循环 + 工具系统 + 记忆 + Textual TUI"
+description = "学习型编程 Agent:ReAct 循环 + 工具系统 + 记忆 + 命令行交互"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
