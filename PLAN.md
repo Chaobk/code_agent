@@ -25,7 +25,7 @@
 | 追加 | 代码组织 | **按能力域物理分包**(见 §4),`core/` 只做编排,不承载具体能力 |
 | Q5/Q9 | 交互形态 | **纯命令行**:保留 `-p` 单次模式,M5 增加直接运行 `code-agent` 的多轮交互会话;TUI 暂缓,不列入当前里程碑 |
 | Q6 | MVP 工具集 | `read_file` / `write_file` / `edit_file` / `run_shell` / `list_dir` / `glob` / `search`(调用本机 ripgrep);git 不单独做工具,由 `run_shell` 直接跑 |
-| Q7 | 接口与工具调用 | 走 **Responses API**(`litellm.aresponses`,不用 chat.completions):`input` 为 item 序列、工具定义扁平(`type=function`)、流式为语义事件;原生 function calling + 流式 |
+| Q7 | 接口与工具调用 | 走 **Chat Completions API**(`litellm.acompletion`):输入为 `messages`、工具定义嵌套于 `function`;`complete_turn` 返回完整 `ModelResponse`,`stream_turn` 原样产出 `ModelResponseStream`;支持 function calling 与流式 |
 | Q8 | 权限与护栏 | **cwd 收窄** + **危险命令黑名单/确认**;M3 先拒绝危险命令,M5 接入终端文字确认(默认拒绝);`-p` 与非终端输入始终拒绝危险命令 |
 | Q11 | 主循环形态 | 单 agent **顺序 ReAct** 起步;架构上支持**多种模式**,后续加 plan 模式 |
 | Q12 | 上下文管理 | 起步用"保留 system + 最近 N 轮 + 丢弃最老工具输出";**文件内容由 agent 按需 `read_file` 拉取,永不自动注入** |
@@ -69,7 +69,7 @@ code_agent/
 │   ├── core/
 │   │   └── agent.py           # 编排器:串起 llm / modes / tools / context / memory / tracing
 │   ├── llm/
-│   │   └── client.py          # litellm 封装:aresponses + 流式事件 + tools + 用量统计
+│   │   └── client.py          # litellm 封装:acompletion + 完整响应/chunk + tools;M6 用量统计
 │   ├── modes/
 │   │   ├── base.py            # AgentMode 协议(薄接缝)
 │   │   ├── react.py           # M1 实现
@@ -116,7 +116,7 @@ code_agent/
 - `uv` 初始化项目,`pyproject.toml`,`requires-python = ">=3.11"`
 - 按 §4 建立**全部能力子包骨架**(未到里程碑的子包只放占位模块 + docstring 注明归属)
 - `config.py`:用 pydantic-settings 读 `DEEPSEEK_API_KEY`、base_url、默认模型、步数上限
-- `llm/client.py`:litellm 薄封装,先只做**流式文本输出**
+- `llm/client.py`:litellm 薄封装,传递 `messages` 与可选 `tools`,保留完整响应和流式 chunk;M0 调用方只展示文本
 - `ui/cli.py`:`--version` 与 `-p "..."` 的最小版本
 - `events.py`:内核事件模型骨架
 - 配好 `ruff` 与 `pytest`
@@ -126,7 +126,7 @@ code_agent/
 ### M1 ReAct 循环(只读) 〔A + D 基础 + B 基础 + E 薄协议 + H `-p`〕
 
 - `modes/base.py` 的极薄 `AgentMode` 协议 + `modes/react.py` 实现
-- `core/agent.py` 编排器:串起模型调用与工具执行(单 agent 顺序循环)
+- `core/agent.py` 编排器:串起模型调用与工具执行(单 agent 顺序循环);组装流式工具参数,完成并校验后执行,以 `role=tool` 和匹配的 `tool_call_id` 回灌结果
 - `context/history.py`:会话状态与消息历史
 - `tools/registry.py` + `tools/spec.py`:工具注册与 schema 生成
 - 只读工具:`read_file`(带行号/偏移)、`list_dir`、`glob`、`search`(rg)
