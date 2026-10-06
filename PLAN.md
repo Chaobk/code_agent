@@ -116,7 +116,7 @@ code_agent/
 - `uv` 初始化项目,`pyproject.toml`,`requires-python = ">=3.11"`
 - 按 §4 建立**全部能力子包骨架**(未到里程碑的子包只放占位模块 + docstring 注明归属)
 - `config.py`:用 pydantic-settings 读 `DEEPSEEK_API_KEY`、base_url、默认模型、步数上限
-- `llm/client.py`:litellm 薄封装,传递 `messages` 与可选 `tools`,保留完整响应和流式 chunk;M0 调用方只展示文本
+- `llm/client.py`:litellm 薄封装,通过 `**kwargs` 传递可选 `tools` 等请求参数,保留完整响应和流式 chunk;M0 调用方只展示文本
 - `ui/cli.py`:`--version` 与 `-p "..."` 的最小版本
 - `events.py`:内核事件模型骨架
 - 配好 `ruff` 与 `pytest`

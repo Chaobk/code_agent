@@ -36,8 +36,8 @@ def client() -> LLMClient:
 
 
 @pytest.fixture
-def tools() -> tuple[dict[str, Any], ...]:
-    return (
+def tools() -> list[dict[str, Any]]:
+    return [
         {
             "type": "function",
             "function": {
@@ -50,11 +50,11 @@ def tools() -> tuple[dict[str, Any], ...]:
                 },
             },
         },
-    )
+    ]
 
 
 async def test_complete_turn_returns_original_response_with_tool_calls_and_usage(
-    monkeypatch: pytest.MonkeyPatch, client: LLMClient, tools: tuple[dict[str, Any], ...]
+    monkeypatch: pytest.MonkeyPatch, client: LLMClient, tools: list[dict[str, Any]]
 ) -> None:
     response = ModelResponse(
         choices=[
@@ -104,7 +104,7 @@ async def test_complete_turn_returns_original_response_with_tool_calls_and_usage
 
 
 async def test_stream_turn_preserves_all_chunks_incrementally(
-    monkeypatch: pytest.MonkeyPatch, client: LLMClient, tools: tuple[dict[str, Any], ...]
+    monkeypatch: pytest.MonkeyPatch, client: LLMClient, tools: list[dict[str, Any]]
 ) -> None:
     chunks = [
         ModelResponseStream(choices=[{"delta": {"role": "assistant", "content": ""}}]),
@@ -198,9 +198,9 @@ async def test_turn_preserves_explicit_empty_tools(
     monkeypatch.setattr(client_module.litellm, "acompletion", request)
 
     if streaming:
-        assert [chunk async for chunk in client.stream_turn([], tools=())] == []
+        assert [chunk async for chunk in client.stream_turn([], tools=[])] == []
     else:
-        await client.complete_turn([], tools=())
+        await client.complete_turn([], tools=[])
     assert request.await_args.kwargs["tools"] == []
 
 
@@ -236,3 +236,91 @@ async def test_stream_turn_preserves_chunk_before_stream_error(
     with pytest.raises(RuntimeError, match="连接中断") as caught:
         await anext(stream)
     assert caught.value is error
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_turn_forwards_extra_request_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+    client: LLMClient,
+    tools: list[dict[str, Any]],
+    streaming: bool,
+) -> None:
+    response = ModelResponse()
+
+    async def events() -> AsyncIterator[ModelResponseStream]:
+        yield ModelResponseStream(choices=[])
+
+    request = AsyncMock(return_value=events() if streaming else response)
+    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    messages = ({"role": "user", "content": "读取 README"},)
+    options = {
+        "tools": tools,
+        "tool_choice": "auto",
+        "temperature": 0.2,
+        "max_tokens": 256,
+        "response_format": {"type": "json_object"},
+        "timeout": 15,
+    }
+
+    if streaming:
+        assert len([chunk async for chunk in client.stream_turn(messages, **options)]) == 1
+    else:
+        assert await client.complete_turn(messages, **options) is response
+    request.assert_awaited_once_with(
+        model="deepseek/deepseek-chat",
+        messages=list(messages),
+        stream=streaming,
+        api_key="test-key",
+        base_url="https://example.invalid",
+        **options,
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_turn_request_overrides_do_not_change_client_defaults(
+    monkeypatch: pytest.MonkeyPatch, client: LLMClient, streaming: bool
+) -> None:
+    async def events() -> AsyncIterator[ModelResponseStream]:
+        yield ModelResponseStream(choices=[])
+
+    request = AsyncMock(side_effect=lambda **kwargs: events() if streaming else ModelResponse())
+    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    overrides = {
+        "model": "other-model",
+        "api_key": "other-test-key",
+        "base_url": "https://other.example.invalid",
+    }
+    if streaming:
+        assert len([chunk async for chunk in client.stream_turn([], **overrides)]) == 1
+        assert len([chunk async for chunk in client.stream_turn([])]) == 1
+    else:
+        await client.complete_turn([], **overrides)
+        await client.complete_turn([])
+
+    assert request.await_args_list[0].kwargs == {
+        "messages": [],
+        "stream": streaming,
+        **overrides,
+    }
+    assert request.await_args_list[1].kwargs == {
+        "model": "deepseek/deepseek-chat",
+        "messages": [],
+        "stream": streaming,
+        "api_key": "test-key",
+        "base_url": "https://example.invalid",
+    }
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_turn_rejects_stream_option_before_request(
+    monkeypatch: pytest.MonkeyPatch, client: LLMClient, streaming: bool
+) -> None:
+    request = AsyncMock()
+    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+
+    with pytest.raises(ValueError, match="stream"):
+        if streaming:
+            await anext(client.stream_turn([], stream=False))
+        else:
+            await client.complete_turn([], stream=True)
+    request.assert_not_awaited()

@@ -17,7 +17,11 @@ from code_agent.config import Settings, load_settings
 
 
 class LLMClient:
-    """封装 LiteLLM 请求，保留完整响应与流式 chunk。"""
+    """封装 LiteLLM 请求，保留完整响应与流式 chunk。
+
+    通过 ``**kwargs`` 透传 tools、tool_choice 等请求参数，并覆盖 Settings 默认值。
+    stream 由两个调用方法固定控制，不接受作为额外参数传入。
+    """
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -25,36 +29,43 @@ class LLMClient:
     def _request_kwargs(
         self,
         messages: Sequence[dict[str, Any]],
+        **kwargs: Any,
     ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
+        if "stream" in kwargs:
+            raise ValueError("stream 由调用方法决定，请使用 complete_turn 或 stream_turn")
+
+        request_kwargs: dict[str, Any] = {
             "model": self._settings.model,
             "messages": list(messages),
         }
 
         if self._settings.api_key:
-            kwargs["api_key"] = self._settings.api_key
+            request_kwargs["api_key"] = self._settings.api_key
         if self._settings.base_url:
-            kwargs["base_url"] = self._settings.base_url
-        return kwargs
+            request_kwargs["base_url"] = self._settings.base_url
+        request_kwargs.update(kwargs)
+        return request_kwargs
 
     async def complete_turn(
         self,
         messages: Sequence[dict[str, Any]],
+        **kwargs: Any,
     ) -> ModelResponse:
         """返回完整响应，由调用方处理文本和工具调用。"""
         return await litellm.acompletion(
             stream=False,
-            **self._request_kwargs(messages),
+            **self._request_kwargs(messages, **kwargs),
         )
 
     async def stream_turn(
         self,
         messages: Sequence[dict[str, Any]],
+        **kwargs: Any,
     ) -> AsyncIterator[ModelResponseStream]:
         """逐个返回完整 chunk，不过滤或拼接内容。"""
         stream = await litellm.acompletion(
             stream=True,
-            **self._request_kwargs(messages),
+            **self._request_kwargs(messages, **kwargs),
         )
         async for chunk in stream:
             yield chunk

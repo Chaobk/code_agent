@@ -11,6 +11,8 @@ M0 已完成:项目骨架与 DeepSeek Chat Completions API 对接,支持命令�
 
 `LLMClient.complete_turn(messages, tools=...)` 返回完整响应对象,
 `stream_turn(messages, tools=...)` 逐个返回完整 chunk,保留工具调用、结束原因和服务返回的用量信息。
+两个方法通过 `**kwargs` 透传 `tools`、`tool_choice`、`temperature` 等参数;
+显式传入的参数覆盖 Settings 默认值,且仅影响本次请求。`stream` 由方法控制,不得额外传入。
 当前 CLI 只提取文本显示;工具参数组装与执行留到 M1。
 
 当前采用纯命令行方案,保留 `-p` 单次模式;M5 计划增加多轮交互会话、退出、中断和文字确认。TUI 暂缓。当前无参数运行仍显示用法并退出。
