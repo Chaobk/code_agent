@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,11 @@ class Role(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
+
+
+class ModelRequest(BaseModel):
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None = None
 
 
 class ToolCall(BaseModel):

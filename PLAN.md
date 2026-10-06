@@ -97,6 +97,8 @@ code_agent/
 └── tests/
     └── code_agent/
         ├── test_config.py
+        ├── core/
+        │   └── test_agent.py
         ├── llm/
         │   └── test_client.py
         └── ui/
