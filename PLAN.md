@@ -95,6 +95,12 @@ code_agent/
 │       ├── render.py          # M1:消费事件并输出文本、工具调用与结果
 │       └── prompts.py         # M5:终端文字确认(默认拒绝)
 └── tests/
+    └── code_agent/
+        ├── test_config.py
+        ├── llm/
+        │   └── test_client.py
+        └── ui/
+            └── test_cli.py
 ```
 
 **依赖方向铁律**:

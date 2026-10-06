@@ -41,5 +41,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 "src/code_agent/ui/cli.py" = ["B008"]
 
 [tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
 testpaths = ["tests"]
 asyncio_mode = "auto"

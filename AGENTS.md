@@ -7,7 +7,7 @@
 - `src/code_agent/`：应用源码；`config.py` 加载配置，`events.py` 定义共享消息与事件模型。
 - `llm/`：封装 LiteLLM；`ui/`：纯命令行交互，`cli.py` 为入口，`repl.py`、`render.py`、`prompts.py` 为后续会话、输出与确认模块。
 - `core/`、`modes/`、`tools/builtin/`、`context/`、`memory/`、`safety/`、`tracing/`：各能力域的模块骨架。
-- `tests/`：配置与命令行测试。
+- `tests/code_agent/`：按源码模块层级组织的单元测试，包括配置、模型层与命令行测试。
 - `pyproject.toml`：依赖与工具配置；`uv.lock`：依赖版本锁定。
 
 ## 构建、测试与开发命令
@@ -30,7 +30,7 @@
 
 ## 测试规范
 
-使用 pytest 与 pytest-asyncio，配置为 `asyncio_mode = "auto"`。测试文件命名为 `tests/test_*.py`，测试函数命名为 `test_*`。通过 `monkeypatch` 隔离环境变量，构造配置时使用 `_env_file=None`，避免本地 `.env` 干扰结果。
+使用 pytest 与 pytest-asyncio，配置为 `asyncio_mode = "auto"`。测试目录 `tests/code_agent/` 镜像 `src/code_agent/`，文件命名为 `test_<模块名>.py`；例如 `src/code_agent/llm/client.py` 对应 `tests/code_agent/llm/test_client.py`。测试函数命名为 `test_*`。通过 `monkeypatch` 隔离环境变量，构造配置时使用 `_env_file=None`，避免本地 `.env` 干扰结果。
 
 行为变更需补充回归测试。计划采用工具层单测、FakeLLM 驱动的循环测试和 CLI 集成测试；真实模型仅做手动验证。目前未配置覆盖率数值门槛。
 
