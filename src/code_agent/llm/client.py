@@ -25,15 +25,12 @@ class LLMClient:
     def _request_kwargs(
         self,
         messages: Sequence[dict[str, Any]],
-        tools: Sequence[dict[str, Any]] | None,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": self._settings.model,
             "messages": list(messages),
         }
 
-        if tools is not None:
-            kwargs["tools"] = list(tools)
         if self._settings.api_key:
             kwargs["api_key"] = self._settings.api_key
         if self._settings.base_url:
@@ -43,25 +40,21 @@ class LLMClient:
     async def complete_turn(
         self,
         messages: Sequence[dict[str, Any]],
-        *,
-        tools: Sequence[dict[str, Any]] | None = None,
     ) -> ModelResponse:
         """返回完整响应，由调用方处理文本和工具调用。"""
         return await litellm.acompletion(
             stream=False,
-            **self._request_kwargs(messages, tools),
+            **self._request_kwargs(messages),
         )
 
     async def stream_turn(
         self,
         messages: Sequence[dict[str, Any]],
-        *,
-        tools: Sequence[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ModelResponseStream]:
         """逐个返回完整 chunk，不过滤或拼接内容。"""
         stream = await litellm.acompletion(
             stream=True,
-            **self._request_kwargs(messages, tools),
+            **self._request_kwargs(messages),
         )
         async for chunk in stream:
             yield chunk
