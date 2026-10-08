@@ -1,7 +1,8 @@
 # code_agent 实施计划
 
-> 本文件是设计访谈(grilling)得出的结论汇总,作为后续实施的唯一依据。
-> 状态:**已确认,实施中**;当前进度:**M0 已通过全部判据**(尚未推送)。
+> 本文件汇总设计决策与后续实施安排;2026-10-08 按用户决定调整为 **Bash 优先**。
+> 状态:**已确认,实施中**;当前进度:**M0 已完成,M1 部分完成**。
+> 已有非流式工具循环、参数校验、错误回灌、最大步数限制和 `read_file`;CLI 尚未接入 Agent,Bash 工具尚未实现。
 
 ---
 
@@ -12,7 +13,8 @@
 - **首个验收场景**:一个**新建的最小靶子仓库**(独立目录、独立 git 仓库),
   内含一个 Python 小模块 + 一个**故意失败**的 pytest 用例;
   验收任务 = "加一个小功能,让测试从红变绿"。
-  靶子仓库位置:`D:\workPros\AICoding\code_agent_target`(M0 创建)。
+  原计划靶子仓库位置:`D:\workPros\AICoding\code_agent_target`;当前执行环境未找到该目录,
+  M1 验收前需准备独立靶子仓库并确定实际路径。
 
 ## 2. 已确定的技术决策
 
@@ -24,15 +26,15 @@
 | 追加 | 模型接入层 | **litellm**——统一多供应商调用,免去自写各家适配;模型标识带前缀(如 `deepseek/deepseek-chat`),密钥按前缀自动读环境变量 |
 | 追加 | 代码组织 | **按能力域物理分包**(见 §4),`core/` 只做编排,不承载具体能力 |
 | Q5/Q9 | 交互形态 | **纯命令行**:保留 `-p` 单次模式,M5 增加直接运行 `code-agent` 的多轮交互会话;TUI 暂缓,不列入当前里程碑 |
-| Q6 | MVP 工具集 | `read_file` / `write_file` / `edit_file` / `run_shell` / `list_dir` / `glob` / `search`(调用本机 ripgrep);git 不单独做工具,由 `run_shell` 直接跑 |
+| Q6 | MVP 工具集 | **只向模型提供一个 `bash` 工具**:读取、搜索、修改、测试与 git 操作均通过 Bash 命令完成;已有 `read_file` 实现与测试保留,后续按失败案例决定是否启用专用工具 |
 | Q7 | 接口与工具调用 | 走 **Chat Completions API**(`litellm.acompletion`):输入为 `messages`、工具定义嵌套于 `function`;`complete_turn` 返回完整 `ModelResponse`,`stream_turn` 原样产出 `ModelResponseStream`;支持 function calling 与流式 |
-| Q8 | 权限与护栏 | **cwd 收窄** + **危险命令黑名单/确认**;M3 先拒绝危险命令,M5 接入终端文字确认(默认拒绝);`-p` 与非终端输入始终拒绝危险命令 |
+| Q8 | 权限与护栏 | M1 固定执行目录,仅在独立靶子仓库手动验收;**cwd 不是沙箱**。M3 增加路径校验、危险命令拒绝与执行环境隔离评估;M5 接入终端文字确认(默认拒绝);`-p` 与非终端输入始终拒绝危险命令 |
 | Q11 | 主循环形态 | 单 agent **顺序 ReAct** 起步;架构上支持**多种模式**,后续加 plan 模式 |
-| Q12 | 上下文管理 | 起步用"保留 system + 最近 N 轮 + 丢弃最老工具输出";**文件内容由 agent 按需 `read_file` 拉取,永不自动注入** |
-| Q13 | 命令行与异步 | 主循环使用 asyncio;shell 用 `create_subprocess_exec`、文件 I/O 与阻塞式终端输入用 `asyncio.to_thread`;交互层消费事件流,将文本增量、工具调用与结果输出到终端 |
+| Q12 | 上下文管理 | M1 先沿用顺序消息历史,限制工具输出长度;M2 抽出历史管理,M6 深化裁剪。**文件内容由 agent 按需调用 Bash 获取,永不自动注入** |
+| Q13 | 命令行与异步 | 主循环使用 asyncio;Bash 用 `create_subprocess_exec` 启动,异步工具直接 await,同步工具用 `asyncio.to_thread`;M1 先输出命令与完整结果,M2 再消费流式事件 |
 | Q14 | 工程规范 | uv 管理;`src/` 布局;依赖见 §6;密钥走环境变量 `DEEPSEEK_API_KEY` |
 | Q15 | 测试策略 | 三层:工具层纯函数单测 + `FakeLLM` 驱动循环测试 + CLI 集成测试(输入/输出、退出、中断与确认);真模型只手动 smoke |
-| Q17 | mode 抽象时机 | **M1 就留极薄 `AgentMode` 协议**(只暴露"生成下一轮请求"与"是否结束"),plan 模式后续加实现 |
+| Q17 | mode 抽象时机 | M1 先用现有 ReAct 循环跑通闭环;**M2 补极薄 `AgentMode` 协议**(只暴露"生成下一轮请求"与"是否结束"),M6 再实现 plan 模式 |
 | Q19 | 协作节奏 | **每个里程碑完成后停下**,展示判据运行结果,用户确认后再继续 |
 | Q21 | 记忆管理深度 | 会话内工作记忆 **+ 跨会话长期记忆**;召回先用"文件 + rg 关键词",**不引向量库** |
 | Q22 | 可观测与评测 | 轨迹 JSONL + token/成本统计 + 可回放(M4/M6);eval harness 放 M7 |
@@ -48,7 +50,7 @@
 | D | 工具系统(注册、schema、执行、结果截断、错误回灌) | `tools/` |
 | E | 规划与模式(ReAct / plan-execute / 多模式可插拔) | `modes/` |
 | F | 执行与验证(shell、跑测试、自验证循环) | `tools/builtin/`(执行端) |
-| G | 安全与权限(cwd 收窄、危险命令拦截、确认、审计) | `safety/` |
+| G | 安全与权限(路径校验、命令拦截、执行环境边界、确认、审计) | `safety/` |
 | H | 交互层(`-p` 单次模式、命令行多轮会话、终端输出、中断、文字确认) | `ui/` |
 | I | 可观测与评测(轨迹 JSONL、回放、成本报表、eval) | `tracing/` |
 | J | 工程与分发(uv 项目、配置、文档、打包) | 项目根 + `config.py` |
@@ -72,16 +74,16 @@ code_agent/
 │   │   └── client.py          # litellm 封装:acompletion + 完整响应/chunk + tools;M6 用量统计
 │   ├── modes/
 │   │   ├── base.py            # AgentMode 协议(薄接缝)
-│   │   ├── react.py           # M1 实现
+│   │   ├── react.py           # M2 从现有循环抽出模式实现
 │   │   └── plan.py            # M6 占位
 │   ├── tools/
 │   │   ├── registry.py        # 工具注册表(可扩展:未来接 MCP)
 │   │   ├── spec.py            # pydantic 参数模型 → JSON Schema
 │   │   └── builtin/
-│   │       ├── files.py       # read_file / write_file / edit_file / list_dir / glob
-│   │       └── shell.py       # run_shell
+│   │       ├── files.py       # 已有 read_file;其余专用工具按需增加
+│   │       └── shell.py       # M1:run_bash;向模型注册为 bash
 │   ├── context/
-│   │   └── history.py         # 消息历史 + 可替换裁剪策略
+│   │   └── history.py         # M2:消息历史;M6:可替换裁剪策略
 │   ├── memory/
 │   │   ├── working.py         # M4:会话内工作记忆
 │   │   └── longterm.py        # M4:跨会话长期记忆 + 召回
@@ -92,7 +94,7 @@ code_agent/
 │   └── ui/
 │       ├── cli.py             # 参数解析、--version、-p;M5 分发到交互会话
 │       ├── repl.py            # M5:终端多轮输入、退出与中断
-│       ├── render.py          # M1:消费事件并输出文本、工具调用与结果
+│       ├── render.py          # M1:命令与结果输出;M2:流式事件输出
 │       └── prompts.py         # M5:终端文字确认(默认拒绝)
 └── tests/
     └── code_agent/
@@ -101,6 +103,10 @@ code_agent/
         │   └── test_agent.py
         ├── llm/
         │   └── test_client.py
+        ├── tools/
+        │   └── builtin/
+        │       ├── test_files.py
+        │       └── test_shell.py  # M1 新增
         └── ui/
             └── test_cli.py
 ```
@@ -117,7 +123,8 @@ code_agent/
 ## 5. 里程碑
 
 每个里程碑完成后暂停,展示判据结果,用户确认后进入下一个。
-**最短可用路径 = M0–M3。**
+**首个任务闭环 = M0–M1;安全与权限基础 = M3。**
+M1 的 Bash 可以写文件和运行程序,不再定义为只读阶段。
 
 ### M0 骨架与连通性 〔J + A 最小〕
 
@@ -131,31 +138,50 @@ code_agent/
 - 创建靶子仓库 `D:\workPros\AICoding\code_agent_target`(小模块 + 失败的 pytest 用例)
 - **判据**:`uv run code-agent --version` 可运行;`uv run code-agent -p "你好"` 能把 DeepSeek 的回复**流式**打印出来
 
-### M1 ReAct 循环(只读) 〔A + D 基础 + B 基础 + E 薄协议 + H `-p`〕
+### M1 Bash 工具与最小任务闭环 〔A + D + F + H `-p`〕
+
+- **当前已实现**:非流式 ReAct 循环、工具 schema 生成、参数校验、结果与错误回灌、最大步数限制;`read_file` 已有实现和基础测试
+- **下一步**:`tools/builtin/shell.py` 的 `BashArgs` 与 `run_bash`;默认注册表只向模型暴露 `bash`
+- Bash 的文件读取、目录发现、搜索、修改、测试与 git 命令由模型生成;`list_dir`、`glob`、`search`、`write_file`、`edit_file` 暂不逐一实现
+- `core/agent.py`:支持直接 await 异步工具并保留同步工具的 `to_thread` 路径;继续使用 `complete_turn`,以 `role=tool` 和匹配的 `tool_call_id` 回灌结果
+- CLI 通过核心编排入口执行任务,传入 Settings 的步数上限和执行目录;完成时给出最终答案,移除提示词中的 `END_TASK` 回复要求
+- `ui/render.py`:显示工具命令、结果和最终答案;M1 Agent 路径先采用非流式输出,不等待流式工具参数组装完成才验收
+- 刹车:最大步数、单轮工具调用上限、Bash 超时、输出截断;命令非零退出作为观察回灌,允许模型修正后重试
+- 测试顺序:Bash 执行器单测 → FakeLLM 异步工具调用与错误回灌测试 → CLI 入口测试 → 真模型手动验收
+- **判据**:在独立靶子仓库通过 `-p` 执行任务,模型只使用 `bash` 读代码、修改并跑 pytest,把红测变绿;展示命令轨迹、退出码和最终 diff
+
+#### M1 下一步规格:Bash 工具
+
+- 模型工具名:`bash`;参数模型:`BashArgs`;执行函数:`async def run_bash(...) -> str`
+- 模型参数:`command: str`(拒绝空白命令)、`timeout_seconds: int = 30`(范围 1–120 秒)
+- 执行目录与 Bash 可执行文件路径由配置及核心绑定,不作为模型可自由指定的工具参数;计划配置名为 `CODE_AGENT_WORKSPACE_DIR` 与 `CODE_AGENT_BASH_PATH`
+- 使用 `create_subprocess_exec(bash_path, "--noprofile", "--norc", "-c", command, cwd=workspace_dir, ...)`;主机执行器不再通过其他 shell 拼接命令
+- 每次调用启动独立进程;`cd`、`export` 不跨调用保留。工具描述说明 shell 类型、执行目录与当前可用命令
+- Windows 使用原生 Git Bash 等已安装的 Bash;Bash 不可用时明确报错,不静默切换到 PowerShell、cmd 或 WSL
+- 返回 JSON 字符串,字段为 `stdout`、`stderr`、`exit_code`、`timed_out`、`truncated`;正常非零退出保留实际退出码,超时时 `exit_code` 为 `null`
+- 固定输出预算,stdout/stderr 合计最多 20,000 字符,截断时标记 `truncated`;读取阶段也限制缓冲增长并持续排空管道,避免只在收集完全部输出后截断
+- 超时或任务取消时清理执行进程及其启动的子进程、等待回收;取消继续传播,不作为普通工具错误吞掉
+- 首个测试:在临时目录创建文件,执行 `cat example.txt`,断言读取内容、退出码和执行目录正确;用假 subprocess 测试固定 Bash 参数和 cwd,有 Bash 的环境补真实集成测试
+- 后续测试覆盖 stderr、非零退出、超时、取消、输出截断和 Bash 缺失;测试不访问真实模型
+
+### M2 流式输出与模块边界整理 〔A + B + D + E + H〕
 
 - `modes/base.py` 的极薄 `AgentMode` 协议 + `modes/react.py` 实现
-- `core/agent.py` 编排器:串起模型调用与工具执行(单 agent 顺序循环);组装流式工具参数,完成并校验后执行,以 `role=tool` 和匹配的 `tool_call_id` 回灌结果
-- `context/history.py`:会话状态与消息历史
-- `tools/registry.py` + `tools/spec.py`:工具注册与 schema 生成
-- 只读工具:`read_file`(带行号/偏移)、`list_dir`、`glob`、`search`(rg)
-- `ui/render.py`:实现事件终端输出;CLI 通过核心编排入口执行任务,替换 M0 的直接模型调用
-- 刹车:最大步数、单轮工具调用上限、连续无进展中止
-- **判据**:在靶子仓库里问"这个项目是做什么的",它能自主读文件并答对
-
-### M2 写工具 + shell(闭环) 〔D + F + A 错误回灌〕
-
-- `write_file`、`edit_file`(精确串替换)、`run_shell`
-- 工具结果截断策略
-- 自验证雏形:工具失败 → 作为观察回灌 → 再尝试
-- **判据**:能改代码并跑 pytest 把红测变绿
+- `context/history.py`:会话状态与消息历史;保留 assistant 工具调用与对应结果的配对关系
+- `tools/registry.py` + `tools/spec.py`:从 Agent 抽出工具注册、schema、参数校验与执行职责;默认工具集继续只含 `bash`
+- `core/agent.py`:接入 `stream_turn`,按工具调用 index 组装名称与参数,结束并校验后才执行;以 `role=tool` 和匹配的 `tool_call_id` 回灌
+- `ui/render.py`:消费 events 定义的流式文本、工具调用、结果和错误;补连续无进展中止
+- 专用工具作为按需扩展项,有具体失败案例和对比结果后再启用,不作为 M2 验收前置条件
+- **判据**:同一靶子任务在流式路径完成;分片工具参数只执行一次,异常结束不执行未完成命令,FakeLLM 和 CLI 回归测试通过
 
 ### M3 安全与权限护栏 〔G〕
 
-- `safety/policy.py`:cwd 强制收窄在指定仓库内
+- `safety/policy.py`:校验执行目录与专用文件工具路径,增加 Bash 命令执行前的策略检查
+- 明确任意 Bash 可通过绝对路径、脚本和子进程访问 cwd 之外;字符串黑名单只作为拦截措施,不视为完整隔离。需要强路径边界时采用并验证 OS 沙箱或受限容器,记录实际保护范围
 - 危险命令黑名单/拦截:M3 阶段统一拒绝;M5 在交互会话接入文字确认,`-p` 与非终端输入始终拒绝
 - 确认由交互层采集,安全策略仍在 `safety/` 中判断;空输入、EOF 或中断均不得授权执行
 - 审计日志留痕
-- **判据**:越界路径被拒;`rm -rf` 类命令被拦
+- **判据**:目录与文件路径越界被拒;`rm -rf` 类命令被拦;通过实际 Bash 命令验证所选隔离环境的文件边界,或明确标注本地模式仍需信任命令
 
 ### M4 记忆与持久化 〔C + I 轨迹〕
 
@@ -173,7 +199,7 @@ code_agent/
 - `ui/prompts.py`:危险操作文字确认,默认拒绝;`-p` 或非终端输入不得等待确认
 - Ctrl+C 取消当前任务并回到输入提示;用户可在下一轮补充或纠正要求
 - 增加 CLI 集成测试,覆盖多轮输入、退出、中断、确认与非交互拒绝
-- **判据**:在同一命令行会话完成 M2 任务并继续追问;拒绝确认时不执行危险操作;`-p` 路径仍可自动化运行
+- **判据**:在同一命令行会话完成 M1 的改代码与测试任务并继续追问;拒绝确认时不执行危险操作;`-p` 路径仍可自动化运行
 
 TUI 暂缓:当前不保留专用模块或引入 Textual;以后需要时单独制定里程碑。
 
@@ -200,13 +226,15 @@ TUI 暂缓:当前不保留专用模块或引入 Textual;以后需要时单独制
   - litellm 版本下限参照本机 `mini-swe-agent` 的锁定:`>=1.75.5`,并排除被投毒版本 `1.82.7` / `1.82.8`
 - litellm 模型标识:`deepseek/deepseek-chat`、`deepseek/deepseek-reasoner`;密钥环境变量名 `DEEPSEEK_API_KEY`
 - 依赖方向见 §4 铁律;新增能力时**加子包 + 在 `core/agent.py` 挂接**,而不是往已有包塞代码
-- 所有工具函数必须小而纯,便于单测;副作用集中在执行器里
-- 密钥不入库:`.env` 与 `.code_agent/` 已在 `.gitignore` 覆盖范围内
+- 工具参数校验与结果格式化保持小而纯;Bash 等副作用集中在执行器里,通过临时目录或假进程测试
+- 密钥不入库:`.env` 已忽略;M4 落盘轨迹前补充 `.code_agent/` 忽略规则,禁止将凭据写入命令日志
 
 ## 7. 前置条件(需要用户提供)
 
-- **`DEEPSEEK_API_KEY` 环境变量**:当前本机**未设置**(Codex 自己的配置里另有一份,但本项目应独立使用一份)。
-- 靶子仓库落地位置确认为 `D:\workPros\AICoding\code_agent_target`。
+- **`DEEPSEEK_API_KEY`**:真模型验收前配置项目独立凭据;单测使用 FakeLLM,不依赖真实密钥
+- **Bash**:当前执行环境的 PATH 以及常见 Git Bash 安装位置均未找到可执行文件;实现前确认安装位置并配置 `CODE_AGENT_BASH_PATH`,实际执行版本不得静默切换 shell
+- **Python 与 uv**:当前执行环境找不到 `uv`,仓库没有 `.venv`;需要恢复开发环境后运行测试,不沿用历史“已通过”作为本轮结果
+- **独立靶子仓库**:原路径 `D:\workPros\AICoding\code_agent_target` 当前不存在;验收前准备最小模块与故意失败的 pytest 用例,并设置工作目录
 
 ## 8. 协作节奏
 
@@ -224,6 +252,8 @@ TUI 暂缓:当前不保留专用模块或引入 Textual;以后需要时单独制
 ---
 
 ## 附:环境事实(实施时参考)
+
+以下为早期记录;当前环境可用性以 §7 的检查结果为准。
 
 - 系统:Windows 11 (build 26200)
 - 运行时:Node v24.12.0 / npm 11.6.2 / pnpm 12.3.4;Python 3.12.10 / pip 25.0.1 / **uv 0.9.17**;Java 21;rustup 无默认工具链

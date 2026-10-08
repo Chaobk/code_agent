@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-`code_agent` 是用于学习编程 Agent 原理的 Python 项目，M0 已完成：已实现配置加载、模型流式调用和命令行入口，多数能力模块仍为占位。调整能力边界或里程碑前，先阅读 `PLAN.md` 中的设计决策、验收标准与协作分工。
+`code_agent` 是用于学习编程 Agent 原理的 Python 项目，M0 已完成，M1 部分完成：已有配置加载、模型调用、非流式工具循环与 `read_file`；CLI 尚未接入 Agent。当前按 Bash 优先路线推进，M1 默认只向模型提供 `bash`，M2 补流式输出与模块边界，其余专用工具按需增加。调整能力边界或里程碑前，先阅读 `PLAN.md` 中的设计决策、验收标准与协作分工。
 
 - `src/code_agent/`：应用源码；`config.py` 加载配置，`events.py` 定义共享消息与事件模型。
 - `llm/`：封装 LiteLLM；`ui/`：纯命令行交互，`cli.py` 为入口，`repl.py`、`render.py`、`prompts.py` 为后续会话、输出与确认模块。

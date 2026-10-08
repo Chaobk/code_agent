@@ -1,7 +1,8 @@
 """内置工具(D):文件相关。
 
-- M1 实现只读部分:``read_file``(带行号)、``list_dir``、``glob``
-- M2 实现写入部分:``write_file``、``edit_file``(精确串替换)
+已有 ``read_file``(带行号);Bash 优先路线下保留实现与测试。
+``list_dir``、``glob``、``search``、``write_file``、``edit_file`` 按需增加,
+不作为 M1/M2 的验收前置条件。
 """
 
 from pathlib import Path
