@@ -2,7 +2,7 @@
 
 > 本文件汇总设计决策与后续实施安排;2026-10-08 按用户决定调整为 **Bash 优先**。
 > 状态:**已确认,实施中**;当前进度:**M0 已完成,M1 部分完成**。
-> 已有非流式工具循环、参数校验、错误回灌、最大步数限制和 `read_file`;CLI 尚未接入 Agent,Bash 工具尚未实现。
+> 已有非流式工具循环、参数校验、错误回灌、最大步数限制和 `read_file`;CLI 尚未接入 Agent;Bash 已有启动、超时/取消分支与 psutil 清理,返回封装与输出限额尚未完成。
 
 ---
 
@@ -141,7 +141,7 @@ M1 的 Bash 可以写文件和运行程序,不再定义为只读阶段。
 ### M1 Bash 工具与最小任务闭环 〔A + D + F + H `-p`〕
 
 - **当前已实现**:非流式 ReAct 循环、工具 schema 生成、参数校验、结果与错误回灌、最大步数限制;`read_file` 已有实现和基础测试
-- **下一步**:`tools/builtin/shell.py` 的 `BashArgs` 与 `run_bash`;默认注册表只向模型暴露 `bash`
+- **下一步**:补全 `tools/builtin/shell.py` 的结果返回、读取预算与错误处理;完成后接入 Agent 并让默认注册表只向模型暴露 `bash`
 - Bash 的文件读取、目录发现、搜索、修改、测试与 git 命令由模型生成;`list_dir`、`glob`、`search`、`write_file`、`edit_file` 暂不逐一实现
 - `core/agent.py`:支持直接 await 异步工具并保留同步工具的 `to_thread` 路径;继续使用 `complete_turn`,以 `role=tool` 和匹配的 `tool_call_id` 回灌结果
 - CLI 通过核心编排入口执行任务,传入 Settings 的步数上限和执行目录;完成时给出最终答案,移除提示词中的 `END_TASK` 回复要求
@@ -152,13 +152,18 @@ M1 的 Bash 可以写文件和运行程序,不再定义为只读阶段。
 
 #### M1 下一步规格:Bash 工具
 
-- 模型工具名:`bash`;参数模型:`BashArgs`;执行函数:`async def run_bash(...) -> str`
+> 2026-10-09 开发快照:53 个测试通过,2 个正常执行测试因 run_bash 缺少 ToolResult 返回而失败;8 个清理测试通过。M1 尚未完成。
+
+- 模型工具名:`bash`;参数模型:`BashArgs`;执行函数:`async def run_bash(...) -> ToolResult`
+- 统一结果契约放在 `events.py`:仅包含 `output: JsonValue`、`status: ToolStatus`、`truncated: bool`;状态为 `completed`、`error`、`timed_out`,不使用 `is_error` 或 `metadata`;失败原因直接放入 `output`
 - 模型参数:`command: str`(拒绝空白命令)、`timeout_seconds: int = 30`(范围 1–120 秒)
 - 执行目录与 Bash 可执行文件路径由配置及核心绑定,不作为模型可自由指定的工具参数;计划配置名为 `CODE_AGENT_WORKSPACE_DIR` 与 `CODE_AGENT_BASH_PATH`
 - 使用 `create_subprocess_exec(bash_path, "--noprofile", "--norc", "-c", command, cwd=workspace_dir, ...)`;主机执行器不再通过其他 shell 拼接命令
 - 每次调用启动独立进程;`cd`、`export` 不跨调用保留。工具描述说明 shell 类型、执行目录与当前可用命令
 - Windows 使用原生 Git Bash 等已安装的 Bash;Bash 不可用时明确报错,不静默切换到 PowerShell、cmd 或 WSL
-- 返回 JSON 字符串,字段为 `stdout`、`stderr`、`exit_code`、`timed_out`、`truncated`;正常非零退出保留实际退出码,超时时 `exit_code` 为 `null`
+- `ToolResult.output` 保留结构化 JSON,包含 `stdout`、`stderr`、原始 `exit_code`;正常退出(含非零)状态为 `completed`;超时为 `timed_out`,退出码为 `null`;无法启动等执行错误为 `error`,输出中说明失败原因;截断标记放在 `ToolResult.truncated`
+- Agent 后续接入时把统一结果序列化为模型消息文本,携带结果、状态和截断信息;ToolResultEvent 与现有 read_file 的字符串路径在该步骤一起迁移
+- 进程树清理采用 psutil 7.x,启动时保留进程身份,通过 asyncio.to_thread 执行同步清理;这是已发现后代的快照清理,父进程提前退出和新生后代的严格生命周期保证仍需启动期进程组或 Job Object
 - 固定输出预算,stdout/stderr 合计最多 20,000 字符,截断时标记 `truncated`;读取阶段也限制缓冲增长并持续排空管道,避免只在收集完全部输出后截断
 - 超时或任务取消时清理执行进程及其启动的子进程、等待回收;取消继续传播,不作为普通工具错误吞掉
 - 首个测试:在临时目录创建文件,执行 `cat example.txt`,断言读取内容、退出码和执行目录正确;用假 subprocess 测试固定 Bash 参数和 cwd,有 Bash 的环境补真实集成测试
