@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 
 class Role(StrEnum):
@@ -39,6 +39,35 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: str = "{}"
+
+
+class ToolStatus(StrEnum):
+    """工具调用的结束状态,不表示命令零退出或用户任务已经完成。
+
+    取消不转换为这些状态:清理执行进程后继续传播 CancelledError。
+    """
+
+    # 工具完成调用并取得有效观察;Shell 非零退出(如测试失败)也属于此状态。
+    # 原始进程退出码保留在 ToolResult.output 中,由模型判断命令的具体结果。
+    COMPLETED = "completed"
+
+    # 工具自身无法正常完成调用,如 Bash 无法启动、执行目录无效或无权限。
+    # 失败原因放在 ToolResult.output 中;Shell 没有退出码时使用 None。
+    ERROR = "error"
+
+    # 超过工具执行时限;清理进程后返回超时原因和已捕获的部分输出。
+    # Shell 的原始退出码按约定使用 None,不将超时归为普通 ERROR。
+    TIMED_OUT = "timed_out"
+
+class ToolResult(BaseModel):
+    """
+    工具输出的统一格式
+    """
+    output: JsonValue
+    # 工具调用的结束状态;具体退出码、失败原因等观察信息放在 output 中。
+    status: ToolStatus
+    # 工具输出是否被截断
+    truncated: bool = False
 
 
 class Message(BaseModel):
