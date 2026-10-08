@@ -105,6 +105,6 @@ class Agent:
 if __name__ == "__main__":
     client = LLMClient(load_settings())
     agent = Agent(client, registry, 10)
-    asyncio.run(agent.run(r"看一下 D:\workPros\AICoding\code_agent\AGENTS.md 这个文件有什么内容"))
+    asyncio.run(agent.run(r"看一下 C:\Users\1004945427\Desktop\pros\code_agent\AGENTS.md 这个文件有什么内容"))
 
     print(agent.messages)
