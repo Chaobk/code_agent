@@ -94,6 +94,64 @@ async def test_run_bash_uses_fixed_workspace_and_returns_process_output(
     assert result.output["exit_code"] == exit_code
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        FileNotFoundError(2, "找不到 Bash", "missing-bash"),
+        FileNotFoundError(2, "找不到执行目录", "missing-workspace"),
+        PermissionError(13, "没有执行权限", "denied-bash"),
+        OSError(8, "可执行文件格式无效", "invalid-bash"),
+    ],
+    ids=["missing-bash", "missing-workspace", "permission-denied", "invalid-executable"],
+)
+async def test_run_bash_returns_error_when_process_cannot_start(
+    error: OSError, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """启动失败应返回可序列化的错误观察,不进入输出读取或进程清理。"""
+    create_process = AsyncMock(side_effect=error)
+    track_process = Mock()
+    collect_output = AsyncMock()
+    cleanup = AsyncMock()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    monkeypatch.setattr(psutil, "Process", track_process)
+    monkeypatch.setattr(shell_module, "collect_output", collect_output)
+    monkeypatch.setattr(shell_module, "stop_process_tree", cleanup)
+
+    result = await run_bash("pwd", workspace_dir=Path.cwd(), bash_path="configured-bash")
+
+    assert result.status == ToolStatus.ERROR
+    assert result.truncated is False
+    assert result.output == {
+        "stdout": "",
+        "stderr": f"{type(error).__name__}: {error}",
+        "exit_code": None,
+    }
+    assert ToolResult.model_validate_json(result.model_dump_json()) == result
+    create_process.assert_awaited_once()
+    track_process.assert_not_called()
+    collect_output.assert_not_called()
+    cleanup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [asyncio.CancelledError(), RuntimeError("启动代码内部错误")],
+    ids=["cancellation", "programming-error"],
+)
+async def test_run_bash_propagates_non_os_startup_errors(
+    error: BaseException, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """取消和内部错误继续传播,不转换为普通工具错误。"""
+    create_process = AsyncMock(side_effect=error)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+
+    with pytest.raises(type(error)) as caught:
+        await run_bash("pwd", workspace_dir=Path.cwd(), bash_path="configured-bash")
+
+    assert caught.value is error
+    create_process.assert_awaited_once()
+
+
 def _output_process(stdout_data: bytes = b"", stderr_data: bytes = b"") -> SimpleNamespace:
     stdout = asyncio.StreamReader()
     stdout.feed_data(stdout_data)

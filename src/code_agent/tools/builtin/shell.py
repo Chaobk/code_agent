@@ -68,17 +68,23 @@ async def run_bash(
     3. 加入超时、取消与进程树清理;输出缓冲限制为 MAX_OUTPUT_CHARS。
     4. 非零退出正常回传;超时标记 timed_out,exit_code 为 null。
     """
-    process = await asyncio.create_subprocess_exec(
-        bash_path,
-        "--noprofile",
-        "--norc",
-        "-c",
-        command,
-        cwd=workspace_dir,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            bash_path,
+            "--noprofile",
+            "--norc",
+            "-c",
+            command,
+            cwd=workspace_dir,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as e:
+        return ToolResult(
+            output={"stdout": "", "stderr": f"{type(e).__name__}: {e}", "exit_code": None},
+            status=ToolStatus.ERROR,
+        )
     # 启动时记录 PID 与创建时间,清理时复用同一个 psutil.Process。
     try:
         tracked_process = psutil.Process(process.pid)
