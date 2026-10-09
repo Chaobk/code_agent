@@ -70,7 +70,6 @@ async def test_run_bash_uses_fixed_workspace_and_returns_process_output(
         pid=4321,
         returncode=exit_code,
         wait=AsyncMock(return_value=exit_code),
-        communicate=AsyncMock(return_value=("文件内容\n".encode(), b"")),
     )
     create_process = AsyncMock(return_value=process)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
@@ -93,6 +92,159 @@ async def test_run_bash_uses_fixed_workspace_and_returns_process_output(
     assert result.output["stdout"] == "文件内容\n"
     assert result.output["stderr"] == ""
     assert result.output["exit_code"] == exit_code
+
+
+def _output_process(stdout_data: bytes = b"", stderr_data: bytes = b"") -> SimpleNamespace:
+    stdout = asyncio.StreamReader()
+    stdout.feed_data(stdout_data)
+    stdout.feed_eof()
+    stderr = asyncio.StreamReader()
+    stderr.feed_data(stderr_data)
+    stderr.feed_eof()
+    return SimpleNamespace(stdout=stdout, stderr=stderr, wait=AsyncMock(return_value=0))
+
+
+@pytest.mark.parametrize(
+    ("stdout_data", "stderr_data", "truncated"),
+    [
+        (b"", b"", False),
+        (b"12345", b"", False),
+        (b"", b"12345", False),
+        (b"123456", b"", True),
+        (b"", b"123456", True),
+        (b"123", b"456", True),
+    ],
+)
+async def test_collect_output_shares_budget_between_streams(
+    stdout_data: bytes, stderr_data: bytes, truncated: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shell_module, "MAX_OUTPUT_CHARS", 5)
+    process = _output_process(stdout_data, stderr_data)
+
+    stdout, stderr, actual_truncated = await shell_module.collect_output(process)
+
+    assert len(stdout) + len(stderr) == min(len(stdout_data) + len(stderr_data), 5)
+    assert stdout_data.decode().startswith(stdout)
+    assert stderr_data.decode().startswith(stderr)
+    assert actual_truncated is truncated
+    assert process.stdout.at_eof()
+    assert process.stderr.at_eof()
+    process.wait.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("limit", "expected", "truncated"), [(10, "你🙂��", False), (3, "你🙂�", True)]
+)
+async def test_collect_output_decodes_split_utf8_and_replaces_invalid_bytes(
+    limit: int, expected: str, truncated: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shell_module, "MAX_OUTPUT_CHARS", limit)
+    data = "你🙂".encode() + b"\xff\xe4"
+    reader = AsyncMock(side_effect=[bytes([byte]) for byte in data] + [b""])
+    process = _output_process()
+    process.stdout = SimpleNamespace(read=reader)
+
+    stdout, stderr, actual_truncated = await shell_module.collect_output(process)
+
+    assert (stdout, stderr, actual_truncated) == (expected, "", truncated)
+    assert all(
+        call.args == (shell_module.OUTPUT_READ_CHUNK_BYTES,) for call in reader.await_args_list
+    )
+    assert reader.await_count == len(data) + 1
+
+
+async def test_collect_output_reads_both_pipes_concurrently() -> None:
+    stderr_started = asyncio.Event()
+    stdout_chunks = iter([b"out", b""])
+    stderr_chunks = iter([b"err", b""])
+
+    async def read_stdout(size: int) -> bytes:
+        await stderr_started.wait()
+        return next(stdout_chunks)
+
+    async def read_stderr(size: int) -> bytes:
+        stderr_started.set()
+        return next(stderr_chunks)
+
+    process = _output_process()
+    process.stdout = SimpleNamespace(read=read_stdout)
+    process.stderr = SimpleNamespace(read=read_stderr)
+
+    result = await asyncio.wait_for(shell_module.collect_output(process), timeout=1)
+
+    assert result == ("out", "err", False)
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancellation"])
+async def test_run_bash_drains_output_during_cleanup(
+    cancel: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shell_module, "MAX_OUTPUT_CHARS", 5)
+    stdout = asyncio.StreamReader()
+    stdout.feed_data(b"partial output")
+    stderr = asyncio.StreamReader()
+    process = SimpleNamespace(
+        pid=4321, stdout=stdout, stderr=stderr, returncode=None, wait=AsyncMock(return_value=-15)
+    )
+    tracked = Mock()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+    monkeypatch.setattr(psutil, "Process", Mock(return_value=tracked))
+
+    async def stop(*args: object) -> None:
+        stdout.feed_eof()
+        stderr.feed_eof()
+        process.returncode = -15
+
+    cleanup = AsyncMock(side_effect=stop)
+    monkeypatch.setattr(shell_module, "stop_process_tree", cleanup)
+    collect_started = asyncio.Event()
+    collect = shell_module.collect_output
+
+    async def observe_collect(process: asyncio.subprocess.Process) -> tuple[str, str, bool]:
+        collect_started.set()
+        return await collect(process)
+
+    monkeypatch.setattr(shell_module, "collect_output", observe_collect)
+    task = asyncio.create_task(
+        run_bash("long-command", timeout_seconds=1, workspace_dir=tmp_path, bash_path="bash")
+    )
+    await asyncio.wait_for(collect_started.wait(), timeout=1)
+    if cancel:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+    else:
+        result = await asyncio.wait_for(task, timeout=2)
+        assert result.status == ToolStatus.TIMED_OUT
+        assert result.truncated is True
+        assert result.output == {"stdout": "parti", "stderr": "", "exit_code": None}
+    cleanup.assert_awaited_once_with(process, tracked)
+    assert stdout.at_eof()
+    assert stderr.at_eof()
+    process.wait.assert_awaited_once()
+
+
+async def test_collect_output_drains_large_real_process_output(tmp_path: Path) -> None:
+    code = "import os; [(os.write(1, b'o' * 200000), os.write(2, b'e' * 200000)) for _ in range(3)]"
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        code,
+        cwd=tmp_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr, truncated = await asyncio.wait_for(
+            shell_module.collect_output(process), timeout=5
+        )
+        assert len(stdout) + len(stderr) == shell_module.MAX_OUTPUT_CHARS
+        assert truncated is True
+        assert process.returncode == 0
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await asyncio.wait_for(process.wait(), timeout=3)
 
 
 def _tracked_process(pid: int) -> Mock:

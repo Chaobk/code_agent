@@ -7,6 +7,7 @@ M3 起它的调用要先过 ``safety`` 的策略检查。
 """
 
 import asyncio
+import codecs
 import os
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from code_agent.events import ToolResult, ToolStatus
 
 MAX_OUTPUT_CHARS = 20_000
+OUTPUT_READ_CHUNK_BYTES = 4096
 
 
 class BashArgs(BaseModel):
@@ -83,9 +85,9 @@ async def run_bash(
     except psutil.NoSuchProcess:
         tracked_process = None
 
-    output_task = asyncio.create_task(process.communicate())
+    output_task = asyncio.create_task(collect_output(process))
     try:
-        stdout, stderr = await asyncio.wait_for(
+        stdout, stderr, truncated = await asyncio.wait_for(
             asyncio.shield(output_task),
             timeout=timeout_seconds,
         )
@@ -94,7 +96,7 @@ async def run_bash(
 
     except TimeoutError:
         await stop_process_tree(process, tracked_process)
-        stdout, stderr = await output_task
+        stdout, stderr, truncated = await output_task
         status = ToolStatus.TIMED_OUT
         exit_code = None
 
@@ -103,17 +105,54 @@ async def run_bash(
         await output_task
         raise
 
-    stdout = stdout.decode()
-    stderr = stderr.decode()
     return ToolResult(
         output={
-            "stdout": stdout[:MAX_OUTPUT_CHARS],
+            "stdout": stdout,
             "stderr": stderr,
             "exit_code": exit_code,
         },
         status=status,
-        truncated=len(stdout) > MAX_OUTPUT_CHARS,
+        truncated=truncated,
     )
+
+
+async def collect_output(process: asyncio.subprocess.Process) -> tuple[str, str, bool]:
+    """并发排空输出管道,stdout/stderr 共用字符预算,超额内容读取后丢弃。
+
+    预算只限制保留的文本;每次读取及解码仅使用固定大小的临时缓冲。
+    两个流按读取顺序占用预算,增量 UTF-8 解码处理跨块字符及非法字节。
+    """
+    remaining = MAX_OUTPUT_CHARS
+    truncated = False
+
+    def retain(text: str) -> str:
+        nonlocal remaining, truncated
+        kept = text[:remaining]
+        remaining -= len(kept)
+        if len(kept) < len(text):
+            truncated = True
+        return kept
+
+    async def read_stream(stream: asyncio.StreamReader) -> str:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        parts: list[str] = []
+        while chunk := await stream.read(OUTPUT_READ_CHUNK_BYTES):
+            kept = retain(decoder.decode(chunk))
+            if kept:
+                parts.append(kept)
+        kept = retain(decoder.decode(b"", final=True))
+        if kept:
+            parts.append(kept)
+        return "".join(parts)
+
+    assert process.stdout is not None
+    assert process.stderr is not None
+    # 一条管道读取失败时,TaskGroup 会取消并等待另一条读取任务。
+    async with asyncio.TaskGroup() as group:
+        stdout_task = group.create_task(read_stream(process.stdout))
+        stderr_task = group.create_task(read_stream(process.stderr))
+    await process.wait()
+    return stdout_task.result(), stderr_task.result(), truncated
 
 
 PROCESS_CLEANUP_TIMEOUT_SECONDS = 2.0

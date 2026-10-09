@@ -2,7 +2,7 @@
 
 > 本文件汇总设计决策与后续实施安排;2026-10-08 按用户决定调整为 **Bash 优先**。
 > 状态:**已确认,实施中**;当前进度:**M0 已完成,M1 部分完成**。
-> 已有非流式工具循环、参数校验、错误回灌、最大步数限制和 `read_file`;默认工具为 Bash,已接入异步调用、统一结果与执行环境绑定;CLI 尚未接入 Agent;输出读取预算与启动错误处理尚未完成。
+> 已有非流式工具循环、参数校验、错误回灌、最大步数限制和 `read_file`;默认工具为 Bash,已接入异步调用、统一结果、执行环境绑定与输出读取预算;CLI 尚未接入 Agent;启动错误处理尚未完成。
 
 ---
 
@@ -141,7 +141,7 @@ M1 的 Bash 可以写文件和运行程序,不再定义为只读阶段。
 ### M1 Bash 工具与最小任务闭环 〔A + D + F + H `-p`〕
 
 - **当前已实现**:非流式 ReAct 循环、工具 schema 生成、参数校验、结果与错误回灌、最大步数限制;默认只向模型暴露 `bash`,支持异步执行和 ToolResult 序列化;工作目录与 Bash 路径通过配置及核心绑定;`read_file` 已有实现和基础测试
-- **下一步**:补全 `tools/builtin/shell.py` 的读取预算与启动错误处理,再将 CLI 接入 Agent
+- **下一步**:补全 `tools/builtin/shell.py` 的启动错误处理,再将 CLI 接入 Agent;输出已并发分块读取并限制保留缓冲
 - Bash 的文件读取、目录发现、搜索、修改、测试与 git 命令由模型生成;`list_dir`、`glob`、`search`、`write_file`、`edit_file` 暂不逐一实现
 - `core/agent.py`:支持直接 await 异步工具并保留同步工具的 `to_thread` 路径;继续使用 `complete_turn`,以 `role=tool` 和匹配的 `tool_call_id` 回灌结果
 - CLI 通过核心编排入口执行任务,传入 Settings 的步数上限和执行目录;完成时给出最终答案,移除提示词中的 `END_TASK` 回复要求
@@ -152,7 +152,7 @@ M1 的 Bash 可以写文件和运行程序,不再定义为只读阶段。
 
 #### M1 下一步规格:Bash 工具
 
-> 2026-10-09 开发快照:82 个测试通过;Bash 结果返回、Agent 异步调用、历史显示和执行环境绑定已实现。输出读取预算、启动错误处理与 CLI 接入尚未完成,M1 尚未完成。
+> 2026-10-09 开发快照:94 个测试通过;Bash 结果返回、Agent 异步调用、历史显示、执行环境绑定与输出读取预算已实现。启动错误处理与 CLI 接入尚未完成,M1 尚未完成。
 
 - 模型工具名:`bash`;参数模型:`BashArgs`;执行函数:`async def run_bash(...) -> ToolResult`
 - 统一结果契约放在 `events.py`:仅包含 `output: JsonValue`、`status: ToolStatus`、`truncated: bool`;状态为 `completed`、`error`、`timed_out`,不使用 `is_error` 或 `metadata`;失败原因直接放入 `output`

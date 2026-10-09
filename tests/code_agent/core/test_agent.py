@@ -165,10 +165,17 @@ async def test_default_bash_uses_configured_environment_and_exposes_only_command
     settings = Settings(
         _env_file=None, workspace_dir=tmp_path / "child" / "..", bash_path="configured-bash"
     )
+    stdout = asyncio.StreamReader()
+    stdout.feed_data(b"workspace output\n")
+    stdout.feed_eof()
+    stderr = asyncio.StreamReader()
+    stderr.feed_eof()
     process = SimpleNamespace(
         pid=4321,
         returncode=0,
-        communicate=AsyncMock(return_value=(b"workspace output\n", b"")),
+        stdout=stdout,
+        stderr=stderr,
+        wait=AsyncMock(return_value=0),
     )
     create_process = AsyncMock(return_value=process)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
