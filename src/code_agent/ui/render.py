@@ -3,7 +3,7 @@
 M1 输出工具命令、结果与最终答案;M2 消费 events 定义的流式文本、工具调用、
 工具结果与错误。
 仅负责呈现,不调用模型、不执行工具、不参与 agent 决策。
-提供消息历史查看函数;M0 的文本输出仍在 cli.py 中。
+提供消息历史查看函数,支持以核心返回的总结替换最后一条助手消息的显示。
 """
 
 import json
@@ -29,11 +29,14 @@ def print_history(
     messages: Sequence[Mapping[str, Any]],
     *,
     show_system: bool = True,
+    final_answer: str | None = None,
     console: Console | None = None,
 ) -> None:
     """按原始消息顺序显示正文、工具调用和结果,不修改历史。
 
     show_system=False 可隐藏系统提示词;console 可传入自定义输出目标。
+    final_answer 非 None 时仅替换末条无工具调用助手消息的显示正文,不修改历史。
+    核心负责识别结束标记和提取总结,渲染层不判断任务是否结束。
     正文按原始文本呈现,避免把代码中的方括号当作 Rich 标记。
     """
     console = console if console is not None else Console()
@@ -51,6 +54,13 @@ def print_history(
         console.rule(Text(title))
 
         content = message.get("content")
+        if (
+            final_answer is not None
+            and index == len(messages)
+            and role == "assistant"
+            and not message.get("tool_calls")
+        ):
+            content = final_answer
         if role == "tool":
             if call_id:
                 console.print(Text(f"调用 ID: {call_id}", style="dim"))

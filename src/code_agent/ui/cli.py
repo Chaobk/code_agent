@@ -1,9 +1,9 @@
 """交互层(H):命令行入口。
 
-M0 只实现两个最必要的开关:
+当前支持两个开关:
 
 - ``--version``;
-- ``-p/--prompt``:命令行单次模式,把模型的回复流式打印到终端。
+- ``-p/--prompt``:命令行单次模式,执行 Agent 任务并显示运行历史。
 
 ``-p`` 模式用于自动化调试与验收。M5 再接入终端多轮会话;当前无参数运行
 仍提示用法并退出。参数入口不承载会话、权限判断或 agent 决策。
@@ -18,7 +18,8 @@ from rich.console import Console
 
 from code_agent import __version__
 from code_agent.config import Settings, load_settings
-from code_agent.llm.client import LLMClient
+from code_agent.core.agent import create_agent
+from code_agent.ui.render import print_history
 
 app = typer.Typer(add_completion=False, help="code_agent —— 学习型编程 Agent")
 console = Console()
@@ -38,7 +39,7 @@ def ask(
         False, "--version", callback=_echo_version, is_eager=True, help="显示版本号后退出"
     ),
 ) -> None:
-    """执行一次任务。M0 阶段仅把 prompt 发给模型并流式打印回复。"""
+    """执行一次 Agent 任务并显示命令、工具结果与最终答案。"""
     if not prompt:
         console.print('[yellow]用法:[/yellow] code-agent -p "你的任务"')
         raise typer.Exit(code=1)
@@ -47,20 +48,27 @@ def ask(
 
 
 async def _run_once(prompt: str, settings: Settings) -> int:
-    """单次执行:发给模型并流式打印。返回进程退出码。"""
-    client = LLMClient(settings)
-    messages = [{"role": "user", "content": prompt}]
+    """执行一次 Agent 任务并显示运行历史,返回进程退出码。"""
+    agent = create_agent(settings)
+
     try:
-        async for chunk in client.stream_turn(messages):
-            if not chunk.choices:
-                continue
-            text = chunk.choices[0].delta.content
-            if text:
-                console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
-    except Exception as exc:  # M0 先直接暴露错误,便于定位配置问题
-        console.print(f"\n[bold red]调用失败:[/bold red] {exc}")
+        answer = await agent.run(prompt)
+    except Exception as exc:
+        print_history(agent.messages, show_system=False, console=console)
+        console.print(
+            f"调用失败: {type(exc).__name__}: {exc}",
+            style="bold red",
+            markup=False,
+            highlight=False,
+        )
         return 1
-    console.print()
+
+    print_history(
+        agent.messages,
+        show_system=False,
+        final_answer=answer,
+        console=console,
+    )
     return 0
 
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from code_agent.config import load_settings
+from code_agent.config import Settings, load_settings
 from code_agent.events import Role, ToolResult
 from code_agent.llm.client import LLMClient
 from code_agent.tools.builtin import create_builtin_registry
@@ -37,7 +37,12 @@ SYSTEM_PROMPT = """
     可用工具:
     {tools}
 
-    当以认为你已经处理完这次的任务，无需多余的轮次进行处理的时候，回答 "END_TASK"
+    结束判断：
+    - 本轮有工具调用时，可以说明操作意图，但不得输出 END_TASK。
+    - 工具执行后，必须根据返回结果判断是否需要继续操作，不得预先假设执行成功。
+    - 只有在没有工具调用的回复中，才能明确结束任务。
+    - 结束时先总结实际结果；无法继续时说明阻塞原因。
+    - 最后独立一行输出 END_TASK。
 """
 
 
@@ -101,12 +106,17 @@ class Agent:
                     self.messages.append(
                         {"role": Role.TOOL.value, "tool_call_id": call.id, "content": output}
                     )
+                # 有工具调用的话，不能直接结束，需要模型判断工具的执行结果
                 continue
 
-            if choice.finish_reason == "stop":
-                return message.content or ""
+            if choice.finish_reason == "tool_calls":
+                raise RuntimeError("模型报告工具调用，但没有返回调用信息")
 
-            raise RuntimeError("模型报告工具调用，但没有返回调用信息")
+            content = message.content or ""
+            lines = content.rstrip().splitlines()
+
+            if lines and lines[-1] == "END_TASK":
+                return "\n".join(lines[:-1]).rstrip()
 
         raise RuntimeError(f"达到最大请求轮数：{self.max_steps}")
 
@@ -136,6 +146,20 @@ class Agent:
             return f"工具参数错误： {exc}"
         except Exception as exc:
             return f"工具执行错误：{type(exc).__name__}:{exc}"
+
+
+def create_agent(settings: Settings) -> Agent:
+    """根据应用配置创建单次任务使用的 Agent(M1)。
+
+    在核心中构造 LLMClient,将 max_steps、workspace_dir、bash_path 绑定到 Agent。
+    CLI 调用此入口后 await agent.run(prompt),再由 ui.render 显示消息历史。
+    """
+    return Agent(
+        LLMClient(settings),
+        max_steps=settings.max_steps,
+        workspace_dir=settings.workspace_dir,
+        bash_path=settings.bash_path,
+    )
 
 
 if __name__ == "__main__":

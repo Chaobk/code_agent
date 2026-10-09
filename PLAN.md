@@ -2,7 +2,7 @@
 
 > 本文件汇总设计决策与后续实施安排;2026-10-08 按用户决定调整为 **Bash 优先**。
 > 状态:**已确认,实施中**;当前进度:**M0 已完成,M1 部分完成**。
-> 已有非流式工具循环、参数校验、错误回灌、最大步数限制和 `read_file`;默认工具为 Bash,已接入异步调用、统一结果、执行环境绑定与输出读取预算;CLI 尚未接入 Agent;启动错误处理尚未完成。
+> 已有非流式工具循环、参数校验、错误回灌、最大步数限制和 `read_file`;默认工具为 Bash,已接入异步调用、统一结果、执行环境绑定、输出读取预算与启动错误处理;CLI 已接入 Agent,临时末行结束标记协议与回归测试已通过。
 
 ---
 
@@ -141,18 +141,30 @@ M1 的 Bash 可以写文件和运行程序,不再定义为只读阶段。
 ### M1 Bash 工具与最小任务闭环 〔A + D + F + H `-p`〕
 
 - **当前已实现**:非流式 ReAct 循环、工具 schema 生成、参数校验、结果与错误回灌、最大步数限制;默认只向模型暴露 `bash`,支持异步执行和 ToolResult 序列化;工作目录与 Bash 路径通过配置及核心绑定;`read_file` 已有实现和基础测试
-- **下一步**:补全 `tools/builtin/shell.py` 的启动错误处理,再将 CLI 接入 Agent;输出已并发分块读取并限制保留缓冲
+- **下一步**:补全单轮工具调用上限,再进行靶子仓库验收;CLI 接入、临时结束协议、Bash 输出预算和启动错误处理已完成
 - Bash 的文件读取、目录发现、搜索、修改、测试与 git 命令由模型生成;`list_dir`、`glob`、`search`、`write_file`、`edit_file` 暂不逐一实现
 - `core/agent.py`:支持直接 await 异步工具并保留同步工具的 `to_thread` 路径;继续使用 `complete_turn`,以 `role=tool` 和匹配的 `tool_call_id` 回灌结果
-- CLI 通过核心编排入口执行任务,传入 Settings 的步数上限和执行目录;完成时给出最终答案,移除提示词中的 `END_TASK` 回复要求
+- CLI 通过核心编排入口执行任务,传入 Settings 的步数上限和执行目录;完成时给出最终答案;2026-10-09 按用户讨论保留并检查 `END_TASK`,允许无工具调用的中间文本轮次
 - `ui/render.py`:显示工具命令、结果和最终答案;M1 Agent 路径先采用非流式输出,不等待流式工具参数组装完成才验收
 - 刹车:最大步数、单轮工具调用上限、Bash 超时、输出截断;命令非零退出作为观察回灌,允许模型修正后重试
 - 测试顺序:Bash 执行器单测 → FakeLLM 异步工具调用与错误回灌测试 → CLI 入口测试 → 真模型手动验收
 - **判据**:在独立靶子仓库通过 `-p` 执行任务,模型只使用 `bash` 读代码、修改并跑 pytest,把红测变绿;展示命令轨迹、退出码和最终 diff
 
-#### M1 下一步规格:Bash 工具
+#### M1 已实现规格:CLI 接入与临时结束协议
 
-> 2026-10-09 开发快照:94 个测试通过;Bash 结果返回、Agent 异步调用、历史显示、执行环境绑定与输出读取预算已实现。启动错误处理与 CLI 接入尚未完成,M1 尚未完成。
+- 核心入口:`core/agent.py` 的 `create_agent(settings: Settings) -> Agent` 已由用户实现 LLMClient 构造与 Agent 配置绑定,传入 `max_steps`、`workspace_dir`、`bash_path`
+- `ui/cli.py` 保留 `_run_once(prompt: str, settings: Settings) -> int` 签名;调用核心入口、await `agent.run(prompt)`,不直接构造 LLMClient 或调用模型方法
+- 本步沿用非流式 Agent 和 `ui/render.py` 的 `print_history`;运行结束后展示命令、完整工具结果及最终答案,隐藏系统提示词,最终答案只显示一次;运行失败时也保留已产生的命令与观察
+- 模型请求失败或达到最大步数时显示错误并返回退出码 1;正常结束返回 0;Bash 非零退出仍作为工具观察,不直接决定 CLI 退出码
+- 结束协议:无工具调用且 finish_reason 为 stop 时,仅当去除末尾空行后最后一行严格等于 `END_TASK` 才结束,返回前面的总结;中间文本没有标记时保留助手消息并直接继续请求,不额外追加 user 消息,仍计入最大步数;正文引用或包含标记子串不能结束,空正文不能触发类型错误
+- 同轮既有文本又有工具调用时,保存完整助手消息、执行工具并回灌结果后必须继续请求;该轮文本含结束标记也不能提前结束。finish_reason 为 tool_calls 却没有调用信息时明确报错,不能由文本标记覆盖协议错误
+- SYSTEM_PROMPT 要求先输出总结,再以独立的最后一行 `END_TASK` 表示结束;无法完成时也需说明阻塞原因并明确结束;该标记只表示结束,不证明任务成功;保留原始历史,CLI 将 agent.run 返回的总结作为 print_history 的 final_answer 传入以隐藏控制标记;该渲染参数与 CLI 接线均已实现
+- 回归测试:`test_prompt_runs_bash_through_agent_and_displays_history`;模拟两轮模型响应与 Bash 观察,验证工具执行、环境绑定、tool_call_id 回灌及终端输出;不访问真实模型或启动真实进程
+- 已迁移原 M0 的 CLI 流式测试,补充配置上限和失败路径测试;流式工具调用留到 M2,单轮工具调用上限仍是 M1 验收前的待补项
+
+#### M1 已实现规格:Bash 工具
+
+> 2026-10-09 开发快照:完整回归测试 117 项通过;Bash 启动失败处理、CLI 接入、临时结束协议、混合响应结果回灌与终端标记隐藏均已验证。单轮工具调用上限和独立靶子仓库验收尚未完成,M1 尚未完成。
 
 - 模型工具名:`bash`;参数模型:`BashArgs`;执行函数:`async def run_bash(...) -> ToolResult`
 - 统一结果契约放在 `events.py`:仅包含 `output: JsonValue`、`status: ToolStatus`、`truncated: bool`;状态为 `completed`、`error`、`timed_out`,不使用 `is_error` 或 `metadata`;失败原因直接放入 `output`
@@ -173,7 +185,8 @@ M1 的 Bash 可以写文件和运行程序,不再定义为只读阶段。
 
 - `modes/base.py` 的极薄 `AgentMode` 协议 + `modes/react.py` 实现
 - `context/history.py`:会话状态与消息历史;保留 assistant 工具调用与对应结果的配对关系
-- `tools/registry.py` + `tools/spec.py`:从 Agent 抽出工具注册、schema、参数校验与执行职责;默认工具集继续只含 `bash`
+- `tools/registry.py` + `tools/spec.py`:从 Agent 抽出工具注册、schema、参数校验与执行职责;M1 默认只含 `bash`,M2 按用户确认增加 `finish_task` 控制工具,替换临时文本结束标记
+- `finish_task` 使用结构化参数提交 completed/blocked 状态和总结;必须单独一轮调用,参数校验失败则回灌错误,由核心/模式决定结束;结束请求不代替实际验证结果
 - `core/agent.py`:接入 `stream_turn`,按工具调用 index 组装名称与参数,结束并校验后才执行;以 `role=tool` 和匹配的 `tool_call_id` 回灌
 - `ui/render.py`:消费 events 定义的流式文本、工具调用、结果和错误;补连续无进展中止
 - 专用工具作为按需扩展项,有具体失败案例和对比结果后再启用,不作为 M2 验收前置条件

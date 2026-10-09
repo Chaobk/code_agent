@@ -3,6 +3,7 @@
 import copy
 from io import StringIO
 
+import pytest
 from rich.console import Console
 
 from code_agent.events import ToolResult, ToolStatus
@@ -87,3 +88,31 @@ def test_print_history_can_hide_system_and_handles_empty_history() -> None:
     assert "02 · 用户" in text
     assert "你好" in text
     assert "暂无可显示的历史消息。" in text
+
+
+@pytest.mark.parametrize("final_answer", ["已完成[bold]", ""])
+def test_print_history_displays_final_summary_and_preserves_original_messages(
+    final_answer: str,
+) -> None:
+    messages = [
+        {"role": "user", "content": "用户输入\nEND_TASK"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "工具输出\nEND_TASK"},
+        {"role": "assistant", "content": "原始总结\nEND_TASK"},
+    ]
+    original = copy.deepcopy(messages)
+    output = StringIO()
+
+    print_history(
+        messages,
+        final_answer=final_answer,
+        console=Console(file=output, width=100, color_system=None),
+    )
+
+    text = output.getvalue()
+    assert "原始总结" not in text
+    assert "用户输入\nEND_TASK" in text
+    assert "工具输出\nEND_TASK" in text
+    assert text.count("END_TASK") == 2
+    if final_answer:
+        assert text.count(final_answer) == 1
+    assert messages == original

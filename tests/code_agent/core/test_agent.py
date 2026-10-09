@@ -46,7 +46,8 @@ class FakeLLM:
         return response
 
 
-def final_response(content: str | None = "任务完成") -> ModelResponse:
+def assistant_response(content: str | None) -> ModelResponse:
+    """普通助手文本,不自动添加结束标记,可用于中间轮次。"""
     return ModelResponse(
         choices=[
             {
@@ -55,6 +56,11 @@ def final_response(content: str | None = "任务完成") -> ModelResponse:
             }
         ]
     )
+
+
+def final_response(content: str | None = "任务完成") -> ModelResponse:
+    """明确结束的响应:总结之后以独立末行输出临时结束标记。"""
+    return assistant_response(f"{content or ''}\nEND_TASK")
 
 
 def tool_call(
@@ -128,7 +134,56 @@ async def test_run_returns_final_answer_and_sends_serializable_tools(
     assert "handler" not in function
     assert json.loads(json.dumps(request["tools"])) == request["tools"]
     assert agent.messages[-1]["role"] == "assistant"
-    assert agent.messages[-1]["content"] == "最终答案"
+    assert agent.messages[-1]["content"] == "最终答案\nEND_TASK"
+    handler.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["我先检查相关代码。", "示例中使用 END_TASK 标记。", "NOT_END_TASK", "", None],
+    ids=["intermediate-text", "quoted-marker", "marker-substring", "empty", "null"],
+)
+async def test_run_continues_text_only_turns_without_final_end_marker(
+    registry: dict[str, dict[str, Any]], handler: Mock, content: str | None
+) -> None:
+    """中间文本或正文中的标记不能结束任务,空正文也不得导致类型错误。"""
+    client = FakeLLM([assistant_response(content), final_response("任务完成")])
+    agent = Agent(client, registry, max_steps=2, workspace_dir=Path.cwd())
+
+    assert await agent.run("执行任务") == "任务完成"
+
+    assert len(client.requests) == 2
+    history = client.requests[1]["messages"]
+    assert [message["role"] for message in history] == ["system", "user", "assistant"]
+    assert history[-1]["content"] == content
+    handler.assert_not_called()
+
+
+async def test_run_removes_final_end_marker_from_returned_summary(
+    registry: dict[str, dict[str, Any]], handler: Mock
+) -> None:
+    """允许末尾空行,最后一行结束标记不属于用户看到的任务总结。"""
+    client = FakeLLM([assistant_response("已完成修改。\n测试全部通过。\nEND_TASK\n\n")])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+
+    assert await agent.run("执行任务") == "已完成修改。\n测试全部通过。"
+
+    assert len(client.requests) == 1
+    assert agent.messages[-1]["content"] == "已完成修改。\n测试全部通过。\nEND_TASK\n\n"
+    handler.assert_not_called()
+
+
+async def test_run_limits_text_only_turns_without_end_marker(
+    registry: dict[str, dict[str, Any]], handler: Mock
+) -> None:
+    """未明确结束的纯文本轮次也受最大请求轮数限制。"""
+    client = FakeLLM([assistant_response("还在分析。"), assistant_response("继续分析。")])
+    agent = Agent(client, registry, max_steps=2, workspace_dir=Path.cwd())
+
+    with pytest.raises(RuntimeError, match="达到最大请求轮数：2"):
+        await agent.run("执行任务")
+
+    assert len(client.requests) == 2
     handler.assert_not_called()
 
 
@@ -140,6 +195,56 @@ async def test_run_returns_string_for_empty_final_content(
 
     assert await Agent(client, registry, workspace_dir=Path.cwd()).run("回答问题") == ""
     assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize("finish_reason", ["tool_calls", "stop"])
+@pytest.mark.parametrize("content", ["我先执行工具。", "任务已经完成。\nEND_TASK"])
+async def test_run_replays_tool_result_before_accepting_end_marker(
+    registry: dict[str, dict[str, Any]],
+    handler: Mock,
+    finish_reason: str,
+    content: str,
+) -> None:
+    """同轮文本保存在历史中;只要有工具调用,就必须先回灌结果再收尾。"""
+    call = tool_call(arguments='{"text":"工具观察"}')
+    response = tool_response([call], finish_reason=finish_reason)
+    response.choices[0].message.content = content
+    client = FakeLLM([response, final_response("已根据工具结果确认完成")])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+
+    assert await agent.run("调用工具并确认结果") == "已根据工具结果确认完成"
+
+    assert len(client.requests) == 2
+    history = client.requests[1]["messages"]
+    assert history[-2]["content"] == content
+    assert history[-2]["tool_calls"] == [call]
+    assert history[-1] == {
+        "role": "tool",
+        "tool_call_id": call["id"],
+        "content": "工具观察",
+    }
+    handler.assert_called_once_with(text="工具观察", repeat=1)
+
+
+async def test_run_replays_tool_failure_despite_same_turn_end_marker(
+    registry: dict[str, dict[str, Any]], handler: Mock
+) -> None:
+    """执行前生成的完成声明不能掩盖实际工具失败。"""
+    handler.side_effect = RuntimeError("执行失败")
+    response = tool_response([tool_call()])
+    response.choices[0].message.content = "工具执行成功。\nEND_TASK"
+    client = FakeLLM([response, final_response("工具失败,需要说明原因")])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+
+    assert await agent.run("调用工具") == "工具失败,需要说明原因"
+
+    assert len(client.requests) == 2
+    result = client.requests[1]["messages"][-1]
+    assert result["role"] == "tool"
+    assert result["tool_call_id"] == "call_1"
+    assert "工具执行错误" in result["content"]
+    assert "执行失败" in result["content"]
+    handler.assert_called_once()
 
 
 async def test_run_includes_resolved_workspace_in_system_prompt(
@@ -400,10 +505,13 @@ async def test_run_rejects_abnormal_response_without_executing_tool(
     handler.assert_not_called()
 
 
+@pytest.mark.parametrize("content", [None, "总结\nEND_TASK"])
 async def test_run_rejects_tool_finish_without_calls(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: dict[str, dict[str, Any]], handler: Mock, content: str | None
 ) -> None:
-    client = FakeLLM([tool_response([])])
+    response = tool_response([])
+    response.choices[0].message.content = content
+    client = FakeLLM([response])
 
     with pytest.raises(RuntimeError, match="没有返回调用信息"):
         await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
@@ -453,7 +561,7 @@ async def test_run_preserves_history_between_user_turns(
     assert [message["role"] for message in history] == ["system", "user", "assistant", "user"]
     assert [message["content"] for message in history[1:]] == [
         "第一轮问题",
-        "第一轮答案",
+        "第一轮答案\nEND_TASK",
         "第二轮问题",
     ]
     handler.assert_not_called()
