@@ -20,6 +20,7 @@ from code_agent.config import load_settings
 from code_agent.events import Role, ToolResult
 from code_agent.llm.client import LLMClient
 from code_agent.tools.builtin import create_builtin_registry
+from code_agent.ui.render import print_history
 
 registry = create_builtin_registry()
 
@@ -116,4 +117,4 @@ if __name__ == "__main__":
     client = LLMClient(load_settings())
     agent = Agent(client, registry, 10)
     asyncio.run(agent.run(r"帮我在当前目录写一个markdown文件，内容就是agent的学习路径"))
-    print(agent.messages)
+    print_history(agent.messages)
