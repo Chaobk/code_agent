@@ -9,10 +9,61 @@ from unittest.mock import AsyncMock, Mock
 
 import psutil
 import pytest
+from pydantic import ValidationError
 
 from code_agent.events import ToolResult, ToolStatus
 from code_agent.tools.builtin import shell as shell_module
-from code_agent.tools.builtin.shell import run_bash
+from code_agent.tools.builtin.shell import BashArgs, run_bash
+
+
+def test_bash_args_preserves_multiline_command_and_defaults_timeout() -> None:
+    command = "  cat <<'EOF'\n    文件内容\nEOF\n"
+
+    args = BashArgs.model_validate_json(
+        BashArgs(command=command, workspace_dir="/workspace").model_dump_json()
+    )
+
+    assert args.model_dump() == {
+        "command": command,
+        "timeout_seconds": 30,
+        "workspace_dir": "/workspace",
+        "bash_path": "bash",
+    }
+
+
+@pytest.mark.parametrize("command", ["", " ", "\t\r\n"])
+def test_bash_args_rejects_blank_command(command: str) -> None:
+    with pytest.raises(ValidationError):
+        BashArgs(command=command, workspace_dir="/workspace")
+
+
+@pytest.mark.parametrize("timeout_seconds", [1, 120])
+def test_bash_args_accepts_timeout_boundaries(timeout_seconds: int) -> None:
+    args = BashArgs(command="pwd", timeout_seconds=timeout_seconds, workspace_dir="/workspace")
+
+    assert args.timeout_seconds == timeout_seconds
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, 121, True, 1.0, 1.5, "30", None])
+def test_bash_args_rejects_invalid_timeout(timeout_seconds: object) -> None:
+    with pytest.raises(ValidationError):
+        BashArgs.model_validate(
+            {"command": "pwd", "timeout_seconds": timeout_seconds, "workspace_dir": "/workspace"}
+        )
+
+
+def test_bash_args_accepts_current_execution_settings() -> None:
+    args = BashArgs(command="pwd", workspace_dir="/workspace", bash_path="configured-bash")
+
+    assert args.workspace_dir == "/workspace"
+    assert args.bash_path == "configured-bash"
+
+
+def test_bash_args_rejects_model_defined_output_budget() -> None:
+    with pytest.raises(ValidationError):
+        BashArgs.model_validate(
+            {"command": "pwd", "workspace_dir": "/workspace", "max_output_chars": 100}
+        )
 
 
 @pytest.mark.parametrize("exit_code", [0, 1], ids=["zero-exit", "nonzero-exit"])

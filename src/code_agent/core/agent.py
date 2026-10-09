@@ -12,11 +12,12 @@ M1 实现。这里是**唯一**把各能力串起来的地方:
 """
 
 import asyncio
+import inspect
 
 from pydantic import ValidationError
 
 from code_agent.config import load_settings
-from code_agent.events import Role
+from code_agent.events import Role, ToolResult
 from code_agent.llm.client import LLMClient
 from code_agent.tools.builtin import create_builtin_registry
 
@@ -92,10 +93,19 @@ class Agent:
             # 校验一下模型给的参数能不能用
             args = spec["args_model"].model_validate_json(arguments)
 
-            return await asyncio.to_thread(
-                spec["handler"],
-                **args.model_dump(),
-            )
+            handler = spec["handler"]
+            kwargs = args.model_dump()
+
+            if inspect.iscoroutinefunction(handler):
+                result = await handler(**kwargs)
+            else:
+                result = await asyncio.to_thread(handler, **kwargs)
+
+            if isinstance(result, ToolResult):
+                return result.model_dump_json()
+
+            return result
+
         except ValidationError as exc:
             return f"工具参数错误： {exc}"
         except Exception as exc:
@@ -105,6 +115,5 @@ class Agent:
 if __name__ == "__main__":
     client = LLMClient(load_settings())
     agent = Agent(client, registry, 10)
-    asyncio.run(agent.run(r"看一下 C:\Users\1004945427\Desktop\pros\code_agent\AGENTS.md 这个文件有什么内容"))
-
+    asyncio.run(agent.run(r"帮我在当前目录写一个markdown文件，内容就是agent的学习路径"))
     print(agent.messages)

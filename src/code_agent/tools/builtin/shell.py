@@ -19,12 +19,28 @@ MAX_OUTPUT_CHARS = 20_000
 
 
 class BashArgs(BaseModel):
-    """模型可指定的命令参数;执行目录和 Bash 路径由应用绑定。"""
+    """一次 Bash 调用的模型参数;执行目录、Bash 路径和输出预算由应用绑定。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    command: str = Field(min_length=1, description="在 Bash 中执行的命令")
-    timeout_seconds: int = Field(default=30, ge=1, le=120, description="执行超时秒数")
+    command: str = Field(
+        min_length=1,
+        description=(
+            "在固定工作目录中执行的 Bash 命令，可包含多行；不能只包含空白。"
+            "每次调用启动独立进程，cd 和 export 的状态不会跨调用保留。"
+        ),
+    )
+    timeout_seconds: int = Field(
+        default=30,
+        strict=True,
+        ge=1,
+        le=120,
+        description="本次命令的执行超时秒数，必须为 1–120 的整数，默认 30 秒",
+    )
+
+    workspace_dir: str = Field(description="当前的工作目录地址，使用绝对路径")
+
+    bash_path: str = Field(default="bash", description="bash执行工具的执行地址")
 
     @field_validator("command")
     @classmethod
@@ -91,6 +107,18 @@ async def run_bash(
         await output_task
         raise
 
+    stdout = stdout.decode()
+    stderr = stderr.decode()
+    return ToolResult(
+        output={
+            "stdout": stdout[:MAX_OUTPUT_CHARS],
+            "stderr": stderr,
+            "exit_code": exit_code,
+        },
+        status=status,
+        truncated=len(stdout) > MAX_OUTPUT_CHARS,
+    )
+
 
 PROCESS_CLEANUP_TIMEOUT_SECONDS = 2.0
 
@@ -156,6 +184,8 @@ def _stop_tracked_process_tree(parent: psutil.Process) -> None:
 
 if __name__ == "__main__":
     res = asyncio.run(
-        run_bash("ls", workspace_dir=r"D:\workPros\AICoding\code_agent", bash_path="bash")
+        run_bash(
+            "ls", workspace_dir=r"C:\Users\1004945427\Desktop\pros\code_agent", bash_path="bash"
+        )
     )
     print(res)

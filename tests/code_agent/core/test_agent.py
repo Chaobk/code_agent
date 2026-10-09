@@ -12,6 +12,7 @@ from litellm.types.utils import ModelResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_agent.core.agent import Agent
+from code_agent.events import ToolResult, ToolStatus
 from code_agent.llm import client as client_module
 
 
@@ -155,6 +156,28 @@ async def test_run_executes_tool_and_replays_call_and_result(
     assert history[-2]["content"] is None
     assert history[-2]["tool_calls"] == [call]
     assert history[-1] == {"role": "tool", "tool_call_id": "call_1", "content": "你好你好"}
+
+
+async def test_run_awaits_async_tool_and_serializes_result() -> None:
+    event_loop_thread = threading.get_ident()
+
+    async def handler(text: str, repeat: int) -> ToolResult:
+        assert threading.get_ident() == event_loop_thread
+        await asyncio.sleep(0)
+        return ToolResult(output={"text": text * repeat}, status=ToolStatus.COMPLETED)
+
+    registry = {"echo": {"description": "异步回显", "args_model": EchoArgs, "handler": handler}}
+    client = FakeLLM([tool_response([tool_call()]), final_response("收到结果")])
+
+    assert await Agent(client, registry).run("调用异步工具") == "收到结果"
+
+    content = client.requests[1]["messages"][-1]["content"]
+    assert isinstance(content, str)
+    assert json.loads(content) == {
+        "output": {"text": "你好"},
+        "status": "completed",
+        "truncated": False,
+    }
 
 
 async def test_run_replays_all_tool_results_before_next_request(
