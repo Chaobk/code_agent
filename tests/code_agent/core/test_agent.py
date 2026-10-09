@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -105,7 +106,7 @@ async def test_run_returns_final_answer_and_sends_serializable_tools(
     registry: dict[str, dict[str, Any]], handler: Mock
 ) -> None:
     client = FakeLLM([final_response("最终答案")])
-    agent = Agent(client, registry)
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("回答问题") == "最终答案"
 
@@ -133,8 +134,24 @@ async def test_run_returns_string_for_empty_final_content(
 ) -> None:
     client = FakeLLM([final_response(content)])
 
-    assert await Agent(client, registry).run("回答问题") == ""
+    assert await Agent(client, registry, workspace_dir=Path.cwd()).run("回答问题") == ""
     assert len(client.requests) == 1
+
+
+async def test_run_includes_resolved_workspace_in_system_prompt(
+    registry: dict[str, dict[str, Any]],
+) -> None:
+    workspace = Path.cwd() / "sample-workspace"
+    client = FakeLLM([final_response()])
+    agent = Agent(client, registry, workspace_dir=workspace / "child" / "..")
+
+    await agent.run("查看工作空间")
+
+    prompt = client.requests[0]["messages"][0]["content"]
+    assert agent.workspace_dir == workspace.resolve()
+    assert f"工作目录：{workspace.resolve()}" in prompt
+    assert "命令解释器：Bash" in prompt
+    assert "cd 和 export 的状态不会跨调用保留" in prompt
 
 
 async def test_run_executes_tool_and_replays_call_and_result(
@@ -142,7 +159,7 @@ async def test_run_executes_tool_and_replays_call_and_result(
 ) -> None:
     call = tool_call(arguments='{"text":"你好","repeat":2}')
     client = FakeLLM([tool_response([call]), final_response("收到工具结果")])
-    agent = Agent(client, registry)
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("使用工具") == "收到工具结果"
 
@@ -169,7 +186,7 @@ async def test_run_awaits_async_tool_and_serializes_result() -> None:
     registry = {"echo": {"description": "异步回显", "args_model": EchoArgs, "handler": handler}}
     client = FakeLLM([tool_response([tool_call()]), final_response("收到结果")])
 
-    assert await Agent(client, registry).run("调用异步工具") == "收到结果"
+    assert await Agent(client, registry, workspace_dir=Path.cwd()).run("调用异步工具") == "收到结果"
 
     content = client.requests[1]["messages"][-1]["content"]
     assert isinstance(content, str)
@@ -189,7 +206,7 @@ async def test_run_replays_all_tool_results_before_next_request(
     ]
     client = FakeLLM([tool_response(calls), final_response()])
 
-    await Agent(client, registry).run("调用两个工具")
+    await Agent(client, registry, workspace_dir=Path.cwd()).run("调用两个工具")
 
     assert len(client.requests) == 2
     assert [call.kwargs for call in handler.call_args_list] == [
@@ -209,7 +226,7 @@ async def test_run_returns_unknown_tool_error_to_model(
 ) -> None:
     client = FakeLLM([tool_response([tool_call(name="unknown")]), final_response()])
 
-    await Agent(client, registry).run("调用工具")
+    await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
 
     result = client.requests[1]["messages"][-1]
     assert result["role"] == "tool"
@@ -229,7 +246,7 @@ async def test_run_returns_argument_validation_error_without_executing_tool(
 ) -> None:
     client = FakeLLM([tool_response([tool_call(arguments=arguments)]), final_response()])
 
-    await Agent(client, registry).run("调用工具")
+    await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
 
     result = client.requests[1]["messages"][-1]
     assert result["role"] == "tool"
@@ -245,7 +262,7 @@ async def test_run_returns_tool_execution_error_to_model(
     handler.side_effect = error
     client = FakeLLM([tool_response([tool_call()]), final_response("已处理错误")])
 
-    assert await Agent(client, registry).run("调用工具") == "已处理错误"
+    assert await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具") == "已处理错误"
 
     result = client.requests[1]["messages"][-1]
     assert result["tool_call_id"] == "call_1"
@@ -260,7 +277,7 @@ async def test_run_stops_at_max_steps(registry: dict[str, dict[str, Any]], handl
         [tool_response([tool_call(f"call_{index}")]) for index in range(3)]
         + [final_response("不应请求这一轮")]
     )
-    agent = Agent(client, registry, max_steps=3)
+    agent = Agent(client, registry, max_steps=3, workspace_dir=Path.cwd())
 
     with pytest.raises(RuntimeError) as caught:
         await agent.run("重复调用工具")
@@ -276,7 +293,7 @@ async def test_run_rejects_abnormal_response_without_executing_tool(
     registry: dict[str, dict[str, Any]], handler: Mock, finish_reason: str
 ) -> None:
     client = FakeLLM([tool_response([tool_call()], finish_reason=finish_reason)])
-    agent = Agent(client, registry)
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
 
     with pytest.raises(RuntimeError, match=finish_reason):
         await agent.run("调用工具")
@@ -292,7 +309,7 @@ async def test_run_rejects_tool_finish_without_calls(
     client = FakeLLM([tool_response([])])
 
     with pytest.raises(RuntimeError, match="没有返回调用信息"):
-        await Agent(client, registry).run("调用工具")
+        await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
 
     assert len(client.requests) == 1
     handler.assert_not_called()
@@ -305,7 +322,7 @@ async def test_run_propagates_model_request_error(
     client = FakeLLM([error])
 
     with pytest.raises(RuntimeError, match="模型请求失败") as caught:
-        await Agent(client, registry).run("回答问题")
+        await Agent(client, registry, workspace_dir=Path.cwd()).run("回答问题")
 
     assert caught.value is error
     assert len(client.requests) == 1
@@ -317,7 +334,7 @@ async def test_run_propagates_tool_cancellation(
 ) -> None:
     handler.side_effect = asyncio.CancelledError()
     client = FakeLLM([tool_response([tool_call()]), final_response("不应继续请求")])
-    agent = Agent(client, registry)
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
 
     with pytest.raises(asyncio.CancelledError):
         await agent.run("调用工具")
@@ -330,7 +347,7 @@ async def test_run_preserves_history_between_user_turns(
     registry: dict[str, dict[str, Any]], handler: Mock
 ) -> None:
     client = FakeLLM([final_response("第一轮答案"), final_response("第二轮答案")])
-    agent = Agent(client, registry)
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("第一轮问题") == "第一轮答案"
     assert await agent.run("第二轮问题") == "第二轮答案"
@@ -358,7 +375,7 @@ async def test_run_executes_sync_tool_outside_event_loop_thread(
     handler.side_effect = record_thread
     client = FakeLLM([tool_response([tool_call()]), final_response()])
 
-    await Agent(client, registry).run("调用工具")
+    await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
 
     assert len(executed_threads) == 1
     assert executed_threads[0] != event_loop_thread

@@ -13,6 +13,7 @@ M1 实现。这里是**唯一**把各能力串起来的地方:
 
 import asyncio
 import inspect
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -25,9 +26,16 @@ from code_agent.ui.render import print_history
 registry = create_builtin_registry()
 
 SYSTEM_PROMPT = """
-    你是一个编码助手，要尽力完成用户询问的问题
+    你是一个编码助手，要尽力完成用户的任务
 
-    你现在可以使用的工具有:
+    当前执行环境：
+    - 工作目录：{workspace_dir}
+    - 命令解释器：Bash
+    - 工具调用默认从上述目录来执行，优先使用相对路径
+    - 每次调用启动独立进程，cd 和 export 的状态不会跨调用保留
+    - 需要了解目录结构或文件内容时，使用工具检查
+
+    可用工具:
     {tools}
 
     当以认为你已经处理完这次的任务，无需多余的轮次进行处理的时候，回答 "END_TASK"
@@ -35,7 +43,15 @@ SYSTEM_PROMPT = """
 
 
 class Agent:
-    def __init__(self, client: LLMClient, registry: dict, max_steps: int = 10):
+    def __init__(
+        self,
+        client: LLMClient,
+        registry: dict,
+        max_steps: int = 10,
+        *,
+        workspace_dir: Path,
+    ):
+        self.workspace_dir = workspace_dir.expanduser().resolve()
         self.client = client
         self.registry = registry
         self.max_steps = max_steps
@@ -54,7 +70,9 @@ class Agent:
             f"- {name}: {spec['description']}" for name, spec in self.registry.items()
         )
 
-        system_prompt = SYSTEM_PROMPT.format(tools=tool_description)
+        system_prompt = SYSTEM_PROMPT.format(
+            workspace_dir=self.workspace_dir, tools=tool_description
+        )
         self.messages = [{"role": "system", "content": system_prompt}]
 
     async def run(self, prompt: str) -> str:
@@ -115,6 +133,8 @@ class Agent:
 
 if __name__ == "__main__":
     client = LLMClient(load_settings())
-    agent = Agent(client, registry, 10)
+    agent = Agent(
+        client, registry, 10, workspace_dir=Path(r"C:\Users\1004945427\Desktop\pros\code_agent")
+    )
     asyncio.run(agent.run(r"帮我在当前目录写一个markdown文件，内容就是agent的学习路径"))
     print_history(agent.messages)
