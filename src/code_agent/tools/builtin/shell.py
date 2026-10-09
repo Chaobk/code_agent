@@ -38,10 +38,6 @@ class BashArgs(BaseModel):
         description="本次命令的执行超时秒数，必须为 1–120 的整数，默认 30 秒",
     )
 
-    workspace_dir: str = Field(description="当前的工作目录地址，使用绝对路径")
-
-    bash_path: str = Field(default="bash", description="bash执行工具的执行地址")
-
     @field_validator("command")
     @classmethod
     def reject_blank_command(cls, value: str) -> str:
@@ -58,9 +54,9 @@ async def run_bash(
     workspace_dir: Path,
     bash_path: str,
 ) -> ToolResult:
-    """运行一次独立 Bash 命令并返回 JSON 字符串(M1 待实现)。
+    """运行一次独立 Bash 命令并返回结构化工具结果(M1 继续完善)。
 
-    输出字段:stdout、stderr、exit_code、timed_out、truncated。
+    output 包含 stdout、stderr、exit_code;状态与截断标记放在 ToolResult 上。
     固定执行目录为 workspace_dir;不跨调用保留 cd 或 export 状态。
 
     实现顺序:

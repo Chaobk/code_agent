@@ -14,7 +14,10 @@ def create_builtin_registry() -> dict:
         #     "handler": read_file,
         # },
         "bash": {
-            "description": "bash工具，返回工具的执行结果",
+            "description": (
+                "在应用指定的工作目录执行 Bash 命令，返回 stdout、stderr 和退出码。"
+                "每次调用是独立进程，cd 和 export 不跨调用保留。"
+            ),
             "args_model": BashArgs,
             "handler": run_bash,
         }

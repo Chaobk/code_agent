@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     # --- J 工程 ---
     log_dir: Path = Field(default=Path(".code_agent/logs"), description="轨迹与日志目录")
 
+    # --- F 执行环境 ---
+    workspace_dir: Path = Field(
+        default_factory=Path.cwd,
+        description="工具执行的工作目录;默认使用启动时的当前目录,由核心规范化为绝对路径",
+    )
+    bash_path: str = Field(
+        default="bash",
+        min_length=1,
+        description="Bash 可执行文件路径或 PATH 中的命令名;不会自动切换其他 shell",
+    )
+
 
 def load_settings() -> Settings:
     """加载配置。"""

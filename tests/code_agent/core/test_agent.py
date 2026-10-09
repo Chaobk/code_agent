@@ -5,6 +5,7 @@ import json
 import threading
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -12,9 +13,12 @@ import pytest
 from litellm.types.utils import ModelResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from code_agent.config import Settings
 from code_agent.core.agent import Agent
 from code_agent.events import ToolResult, ToolStatus
 from code_agent.llm import client as client_module
+from code_agent.tools.builtin import create_builtin_registry
+from code_agent.tools.builtin import shell as shell_module
 
 
 class EchoArgs(BaseModel):
@@ -152,6 +156,92 @@ async def test_run_includes_resolved_workspace_in_system_prompt(
     assert f"工作目录：{workspace.resolve()}" in prompt
     assert "命令解释器：Bash" in prompt
     assert "cd 和 export 的状态不会跨调用保留" in prompt
+
+
+async def test_default_bash_uses_configured_environment_and_exposes_only_command_parameters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        _env_file=None, workspace_dir=tmp_path / "child" / "..", bash_path="configured-bash"
+    )
+    process = SimpleNamespace(
+        pid=4321,
+        returncode=0,
+        communicate=AsyncMock(return_value=(b"workspace output\n", b"")),
+    )
+    create_process = AsyncMock(return_value=process)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    monkeypatch.setattr(shell_module.psutil, "Process", Mock())
+    client = FakeLLM(
+        [tool_response([tool_call(name="bash", arguments='{"command":"pwd"}')]), final_response()]
+    )
+    agent = Agent(client, workspace_dir=settings.workspace_dir, bash_path=settings.bash_path)
+
+    await agent.run("查看当前目录")
+
+    function = client.requests[0]["tools"][0]["function"]
+    assert function["name"] == "bash"
+    assert set(function["parameters"]["properties"]) == {"command", "timeout_seconds"}
+    assert function["parameters"]["required"] == ["command"]
+    assert str(tmp_path.resolve()) in client.requests[0]["messages"][0]["content"]
+    call = create_process.await_args
+    assert call.args == ("configured-bash", "--noprofile", "--norc", "-c", "pwd")
+    assert call.kwargs["cwd"] == agent.workspace_dir == tmp_path.resolve()
+    result = json.loads(client.requests[1]["messages"][-1]["content"])
+    assert result["status"] == "completed"
+    assert result["output"]["stdout"] == "workspace output\n"
+
+
+@pytest.mark.parametrize("extra", [{"workspace_dir": "/other"}, {"bash_path": "other-bash"}])
+async def test_default_bash_rejects_model_environment_overrides(
+    extra: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_process = AsyncMock()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    arguments = json.dumps({"command": "pwd", **extra})
+    client = FakeLLM(
+        [tool_response([tool_call(name="bash", arguments=arguments)]), final_response()]
+    )
+
+    await Agent(client, workspace_dir=Path.cwd()).run("查看目录")
+
+    assert client.requests[1]["messages"][-1]["content"].startswith("工具参数错误")
+    create_process.assert_not_awaited()
+
+
+async def test_bash_bindings_are_independent_for_agents_sharing_registry() -> None:
+    observations: list[tuple[Path, str]] = []
+
+    async def handler(
+        command: str, timeout_seconds: int, *, workspace_dir: Path, bash_path: str
+    ) -> ToolResult:
+        observations.append((workspace_dir, bash_path))
+        return ToolResult(output=command, status=ToolStatus.COMPLETED)
+
+    shared_registry = create_builtin_registry()
+    shared_registry["bash"]["handler"] = handler
+    agents = []
+    for name in ("first", "second"):
+        client = FakeLLM(
+            [
+                tool_response([tool_call(name="bash", arguments='{"command":"pwd"}')]),
+                final_response(),
+            ]
+        )
+        agents.append(
+            Agent(client, shared_registry, workspace_dir=Path(name), bash_path=f"{name}-bash")
+        )
+
+    for agent in agents:
+        await agent.run("查看目录")
+
+    assert observations == [
+        (Path("first").resolve(), "first-bash"),
+        (Path("second").resolve(), "second-bash"),
+    ]
+    assert shared_registry["bash"]["handler"] is handler
 
 
 async def test_run_executes_tool_and_replays_call_and_result(

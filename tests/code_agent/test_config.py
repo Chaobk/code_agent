@@ -13,6 +13,8 @@ _ENV_NAMES = (
     "CODE_AGENT_BASE_URL",
     "CODE_AGENT_MAX_STEPS",
     "CODE_AGENT_LOG_DIR",
+    "CODE_AGENT_WORKSPACE_DIR",
+    "CODE_AGENT_BASH_PATH",
 )
 
 
@@ -35,6 +37,28 @@ def test_defaults() -> None:
     assert settings.base_url == "https://api.deepseek.com"
     assert settings.max_steps == 30
     assert isinstance(settings.log_dir, Path)
+    assert settings.workspace_dir == Path.cwd()
+    assert settings.bash_path == "bash"
+
+
+def test_execution_environment_uses_code_agent_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = Path.cwd() / "sample-workspace"
+    monkeypatch.setenv("CODE_AGENT_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setenv("CODE_AGENT_BASH_PATH", "configured-bash")
+
+    settings = _settings()
+
+    assert settings.workspace_dir == workspace
+    assert settings.bash_path == "configured-bash"
+
+
+def test_workspace_default_is_evaluated_when_settings_are_loaded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert _settings().workspace_dir == tmp_path
 
 
 def test_api_key_uses_deepseek_env_name(monkeypatch: pytest.MonkeyPatch) -> None:

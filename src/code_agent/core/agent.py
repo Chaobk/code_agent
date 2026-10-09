@@ -13,6 +13,7 @@ M1 实现。这里是**唯一**把各能力串起来的地方:
 
 import asyncio
 import inspect
+from functools import partial
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -22,8 +23,6 @@ from code_agent.events import Role, ToolResult
 from code_agent.llm.client import LLMClient
 from code_agent.tools.builtin import create_builtin_registry
 from code_agent.ui.render import print_history
-
-registry = create_builtin_registry()
 
 SYSTEM_PROMPT = """
     你是一个编码助手，要尽力完成用户的任务
@@ -46,15 +45,23 @@ class Agent:
     def __init__(
         self,
         client: LLMClient,
-        registry: dict,
+        registry: dict | None = None,
         max_steps: int = 10,
         *,
         workspace_dir: Path,
+        bash_path: str = "bash",
     ):
         self.workspace_dir = workspace_dir.expanduser().resolve()
         self.client = client
-        self.registry = registry
         self.max_steps = max_steps
+        registry = registry if registry is not None else create_builtin_registry()
+        # 每个 Agent 保留自己的绑定,避免共享注册表被另一会话覆盖。
+        self.registry = {name: dict(spec) for name, spec in registry.items()}
+        if "bash" in self.registry:
+            spec = self.registry["bash"]
+            spec["handler"] = partial(
+                spec["handler"], workspace_dir=self.workspace_dir, bash_path=bash_path
+            )
         self.tools = [
             {
                 "type": "function",
@@ -132,9 +139,13 @@ class Agent:
 
 
 if __name__ == "__main__":
-    client = LLMClient(load_settings())
+    settings = load_settings()
+    client = LLMClient(settings)
     agent = Agent(
-        client, registry, 10, workspace_dir=Path(r"C:\Users\1004945427\Desktop\pros\code_agent")
+        client,
+        max_steps=settings.max_steps,
+        workspace_dir=settings.workspace_dir,
+        bash_path=settings.bash_path,
     )
     asyncio.run(agent.run(r"帮我在当前目录写一个markdown文件，内容就是agent的学习路径"))
     print_history(agent.messages)
