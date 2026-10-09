@@ -1,6 +1,6 @@
 """内核事件与消息模型 —— 全系统唯一的共享契约。
 
-各能力子包之间**互不 import**,只通过这里的数据模型通信:
+共享消息、工具结果与事件契约;业务编排集中在核心,能力通过契约协作:
 
     模型输出 ──► Event ──► 界面渲染 / 轨迹落盘
                     ▲
@@ -59,10 +59,12 @@ class ToolStatus(StrEnum):
     # Shell 的原始退出码按约定使用 None,不将超时归为普通 ERROR。
     TIMED_OUT = "timed_out"
 
+
 class ToolResult(BaseModel):
     """
     工具输出的统一格式
     """
+
     output: JsonValue
     # 工具调用的结束状态;具体退出码、失败原因等观察信息放在 output 中。
     status: ToolStatus

@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-`code_agent` 是用于学习编程 Agent 原理的 Python 项目，M0 已完成，M1 部分完成：已有配置加载、模型调用、非流式工具循环与 `read_file`；CLI 尚未接入 Agent。当前按 Bash 优先路线推进，M1 默认只向模型提供 `bash`，M2 补流式输出与模块边界，其余专用工具按需增加。调整能力边界或里程碑前，先阅读 `PLAN.md` 中的设计决策、验收标准与协作分工。
+`code_agent` 是用于学习编程 Agent 原理的 Python 项目。M0 已完成；M1 已有非流式工具循环、异步 Bash、临时结束协议和 CLI，等待独立靶子仓库验收。M1 默认只提供 `bash`，不限制单轮工具调用数量；M2a 整理工具、历史与 `finish_task` 协议，M2b 接流式输出。M4 增加多轮会话，M5 做轨迹、恢复与项目记忆，M6 再抽模式接口。调整能力边界或里程碑前，先阅读 `PLAN.md` 的设计决策、验收标准与协作分工。
 
 - `src/code_agent/`：应用源码；`config.py` 加载配置，`events.py` 定义共享消息与事件模型。
 - `llm/`：封装 LiteLLM；`ui/`：纯命令行交互，`cli.py` 为入口，`repl.py`、`render.py`、`prompts.py` 为后续会话、输出与确认模块。
@@ -17,7 +17,7 @@
 - `uv sync`：安装运行与开发依赖。
 - `Copy-Item .env.example .env`：在 PowerShell 中创建本地配置，然后填入 API 密钥。
 - `uv run code-agent --version`：验证命令行入口。
-- `uv run code-agent -p "你好"`：手动验证流式响应，需要模型服务凭据。
+- `uv run code-agent -p "你好"`：手动验证 Agent 单次响应，需要模型服务凭据；流式 Agent 路径在 M2b 接入。
 - `uv run pytest`：运行测试集。
 - `uv run ruff check .`：检查代码规范；`uv run ruff format .`：格式化 Python 文件。
 - `uv build`：使用 Hatchling 构建分发包。
@@ -26,7 +26,7 @@
 
 使用四空格缩进和类型注解；函数、模块使用 `snake_case`，类使用 `PascalCase`。Ruff 的目标版本为 Python 3.11，行长上限为 100 字符。文档字符串沿用现有模块和函数的写法。
 
-遵循 `PLAN.md` 的依赖边界：各能力包通过 `events.py` 共享契约，跨能力编排集中在 `core/agent.py`。模型接入层保持轻薄，工具函数应小而易测。未实现模块需注明所属里程碑。
+遵循 `PLAN.md` 的依赖边界：业务编排和对象连接集中在 `core/`，UI 调用核心公开入口；能力模块通过共享契约和传入接口协作，不引入循环依赖。`config.py` 可供需要配置的模块使用，同包内部正常复用。模型接入层保持轻薄，工具函数应小而易测。未实现模块注明所属里程碑，接口按实际需求抽出。
 
 ## 测试规范
 
@@ -51,3 +51,5 @@ PR 应说明行为变化、关联适用的问题或里程碑，并列出验证�
 ## 安全与配置
 
 凭据通过环境变量或已忽略的 `.env` 文件管理。使用 `DEEPSEEK_API_KEY` 和 `CODE_AGENT_*` 配置项，禁止提交真实密钥或含凭据的日志。保留 `pyproject.toml` 中的依赖版本排除规则。
+
+手动 smoke 与验收产物放独立目录；测试生成的学习文档和临时文件不纳入提交。最大轮数、执行超时与输出预算保留，可选增强不得自动成为里程碑验收前置条件。

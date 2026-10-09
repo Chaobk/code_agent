@@ -174,10 +174,14 @@ replay_pid*
 models/
 
 # 本地对话 / 运行记录
+.code_agent/
 .codex/
 .claude/
 .aider*
 .continue/
+
+# 已识别的手动 smoke 产物;后续验收使用独立目录
+/src/code_agent/core/agent_learning_path.md
 
 # ------------------------------------------------------------
 # 日志与临时文件
