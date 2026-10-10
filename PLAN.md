@@ -1,8 +1,8 @@
 # code_agent 实施计划
 
 > 2026-10-10 更新：用户确认 M1 验收通过，进入 M2a。
-> 当前进度：M0、M1 已完成；M2a 的 ToolSpec / ToolRegistry 和 Agent 接线已实现，完整回归 133 项通过，Ruff 检查通过。
-> 下一步：整理历史、事件和 finish_task 协议。
+> 当前进度：M0、M1 已完成；M2a 的 ToolSpec / ToolRegistry、工具接线和 ConversationHistory 已实现，完整回归 156 项通过，Ruff 检查通过。
+> 下一步：将 ConversationHistory 接入 Agent，处理中断时的工具配对收尾，再整理事件和 finish_task 协议。
 
 ## 1. 项目定位与范围
 
@@ -132,7 +132,7 @@ src/code_agent/
 
 先沿用非流式响应整理协议，再进行流式改造：
 
-已完成 tools/spec.py 的 ToolSpec 数据定义和 to_schema，以及 tools/registry.py 的 register/model_tools/execute；内置工具工厂与 Agent 已接入注册表，旧字典和 Agent 内部重复执行逻辑已移除。工具层 16 项测试通过，完整回归 133 项通过，Ruff 检查与格式检查通过；历史、事件和 finish_task 协议仍待实现。
+已完成 tools/spec.py 的 ToolSpec 数据定义和 to_schema，以及 tools/registry.py 的 register/model_tools/execute；内置工具工厂与 Agent 已接入注册表，旧字典和 Agent 内部重复执行逻辑已移除。ConversationHistory 的四个公开方法已实现，工具层 16 项、历史模块 23 项测试通过，完整回归 156 项通过，Ruff 检查与格式检查通过；历史接线、中断收尾、事件和 finish_task 协议仍待实现。
 
 - register 拒绝重名注册，model_tools 按注册顺序生成定义，handler 不进入模型 schema。
 - execute 接收 name 和 JSON 参数字符串，返回 ToolResult；未知工具、参数错误、执行错误统一为 ERROR，原因放入 output.error。
@@ -143,6 +143,7 @@ src/code_agent/
 
 - 从 Agent 中抽出 tools/registry.py、tools/spec.py：注册、schema、参数校验和统一执行结果；不预先实现 MCP 适配层。
 - context/history.py 管理消息追加、工具调用/结果配对、任务中断后的有效历史；没有完成执行的调用不能留成可继续的悬空记录。
+- ConversationHistory 已提供 add_message/get_messages/get_pending_calls/get_model_messages：消息与读取快照深拷贝；按调用 ID 登记和删除 pending；校验失败保持状态不变；存在未配对调用时可展示历史，但拒绝直接提供模型历史。pending 只表示尚未记录结果，不表示工具尚未执行。Agent 目前仍直接保存 self.messages，后续接线时负责补充准确的中断观察，不自动重跑结果未知的命令。
 - 统一工具事件和任务结束结果；任务状态与 ToolStatus 区分。工具 completed 不表示任务完成或测试通过。
 - 新增 finish_task 控制调用，参数为 completed/blocked 状态和总结；blocked 要说明阻塞原因。它不执行系统命令，由核心解释其结束意义。
 - finish_task 必须单独一轮；若与其他调用混用，执行前拒绝并为相关调用生成配对的错误观察，模型可以修正。参数错误回灌，不能作为结束信号。
