@@ -13,16 +13,13 @@ M2a 将当前演示入口的终端渲染依赖移出核心业务模块。
 """
 
 import asyncio
-import inspect
-from functools import partial
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from code_agent.config import Settings, load_settings
-from code_agent.events import Role, ToolResult
+from code_agent.events import Role
 from code_agent.llm.client import LLMClient
 from code_agent.tools.builtin import create_builtin_registry
+from code_agent.tools.registry import ToolRegistry
 from code_agent.ui.render import print_history
 
 SYSTEM_PROMPT = """
@@ -51,7 +48,7 @@ class Agent:
     def __init__(
         self,
         client: LLMClient,
-        registry: dict | None = None,
+        registry: ToolRegistry | None = None,
         max_steps: int = 10,
         *,
         workspace_dir: Path,
@@ -60,27 +57,17 @@ class Agent:
         self.workspace_dir = workspace_dir.expanduser().resolve()
         self.client = client
         self.max_steps = max_steps
-        registry = registry if registry is not None else create_builtin_registry()
+        registry = (
+            registry
+            if registry is not None
+            else create_builtin_registry(workspace_dir=self.workspace_dir, bash_path=bash_path)
+        )
         # 每个 Agent 保留自己的绑定,避免共享注册表被另一会话覆盖。
-        self.registry = {name: dict(spec) for name, spec in registry.items()}
-        if "bash" in self.registry:
-            spec = self.registry["bash"]
-            spec["handler"] = partial(
-                spec["handler"], workspace_dir=self.workspace_dir, bash_path=bash_path
-            )
-        self.tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": spec["description"],
-                    "parameters": spec["args_model"].model_json_schema(),
-                },
-            }
-            for name, spec in self.registry.items()
-        ]
+        self.registry = registry
+        self.tools = registry.model_tools()
         tool_description = "\n".join(
-            f"- {name}: {spec['description']}" for name, spec in self.registry.items()
+            f"- {tool['function']['name']}: {tool['function']['description']}"
+            for tool in self.tools
         )
 
         system_prompt = SYSTEM_PROMPT.format(
@@ -103,9 +90,15 @@ class Agent:
 
             if message.tool_calls:
                 for call in message.tool_calls:
-                    output = await self._execute_tool(call.function.name, call.function.arguments)
+                    output = await self.registry.execute(
+                        call.function.name, call.function.arguments
+                    )
                     self.messages.append(
-                        {"role": Role.TOOL.value, "tool_call_id": call.id, "content": output}
+                        {
+                            "role": Role.TOOL.value,
+                            "tool_call_id": call.id,
+                            "content": output.model_dump_json(),
+                        }
                     )
                 # 有工具调用的话，不能直接结束，需要模型判断工具的执行结果
                 continue
@@ -120,33 +113,6 @@ class Agent:
                 return "\n".join(lines[:-1]).rstrip()
 
         raise RuntimeError(f"达到最大请求轮数：{self.max_steps}")
-
-    async def _execute_tool(self, name: str, arguments: str) -> str:
-        spec = self.registry.get(name)
-        if spec is None:
-            return f"工具错误：未注册的工具{name}"
-
-        try:
-            # 校验一下模型给的参数能不能用
-            args = spec["args_model"].model_validate_json(arguments)
-
-            handler = spec["handler"]
-            kwargs = args.model_dump()
-
-            if inspect.iscoroutinefunction(handler):
-                result = await handler(**kwargs)
-            else:
-                result = await asyncio.to_thread(handler, **kwargs)
-
-            if isinstance(result, ToolResult):
-                return result.model_dump_json()
-
-            return result
-
-        except ValidationError as exc:
-            return f"工具参数错误： {exc}"
-        except Exception as exc:
-            return f"工具执行错误：{type(exc).__name__}:{exc}"
 
 
 def create_agent(settings: Settings) -> Agent:

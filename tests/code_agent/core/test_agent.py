@@ -17,8 +17,10 @@ from code_agent.config import Settings
 from code_agent.core.agent import Agent
 from code_agent.events import ToolResult, ToolStatus
 from code_agent.llm import client as client_module
-from code_agent.tools.builtin import create_builtin_registry
+from code_agent.tools import builtin as builtin_module
 from code_agent.tools.builtin import shell as shell_module
+from code_agent.tools.registry import ToolRegistry
+from code_agent.tools.spec import ToolSpec
 
 
 class EchoArgs(BaseModel):
@@ -102,18 +104,14 @@ def handler() -> Mock:
 
 
 @pytest.fixture
-def registry(handler: Mock) -> dict[str, dict[str, Any]]:
-    return {
-        "echo": {
-            "description": "返回指定文本，可重复多次",
-            "args_model": EchoArgs,
-            "handler": handler,
-        }
-    }
+def registry(handler: Mock) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(ToolSpec("echo", "返回指定文本，可重复多次", EchoArgs, handler))
+    return registry
 
 
 async def test_run_returns_final_answer_and_sends_serializable_tools(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: ToolRegistry, handler: Mock
 ) -> None:
     client = FakeLLM([final_response("最终答案")])
     agent = Agent(client, registry, workspace_dir=Path.cwd())
@@ -128,7 +126,7 @@ async def test_run_returns_final_answer_and_sends_serializable_tools(
     function = request["tools"][0]["function"]
     assert request["tools"][0]["type"] == "function"
     assert function["name"] == "echo"
-    assert function["description"] == registry["echo"]["description"]
+    assert function["description"] == "返回指定文本，可重复多次"
     assert function["parameters"]["required"] == ["text"]
     assert function["parameters"]["properties"]["repeat"]["default"] == 1
     assert "handler" not in function
@@ -144,7 +142,7 @@ async def test_run_returns_final_answer_and_sends_serializable_tools(
     ids=["intermediate-text", "quoted-marker", "marker-substring", "empty", "null"],
 )
 async def test_run_continues_text_only_turns_without_final_end_marker(
-    registry: dict[str, dict[str, Any]], handler: Mock, content: str | None
+    registry: ToolRegistry, handler: Mock, content: str | None
 ) -> None:
     """中间文本或正文中的标记不能结束任务,空正文也不得导致类型错误。"""
     client = FakeLLM([assistant_response(content), final_response("任务完成")])
@@ -160,7 +158,7 @@ async def test_run_continues_text_only_turns_without_final_end_marker(
 
 
 async def test_run_removes_final_end_marker_from_returned_summary(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: ToolRegistry, handler: Mock
 ) -> None:
     """允许末尾空行,最后一行结束标记不属于用户看到的任务总结。"""
     client = FakeLLM([assistant_response("已完成修改。\n测试全部通过。\nEND_TASK\n\n")])
@@ -174,7 +172,7 @@ async def test_run_removes_final_end_marker_from_returned_summary(
 
 
 async def test_run_limits_text_only_turns_without_end_marker(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: ToolRegistry, handler: Mock
 ) -> None:
     """未明确结束的纯文本轮次也受最大请求轮数限制。"""
     client = FakeLLM([assistant_response("还在分析。"), assistant_response("继续分析。")])
@@ -189,7 +187,7 @@ async def test_run_limits_text_only_turns_without_end_marker(
 
 @pytest.mark.parametrize("content", ["", None])
 async def test_run_returns_string_for_empty_final_content(
-    registry: dict[str, dict[str, Any]], content: str | None
+    registry: ToolRegistry, content: str | None
 ) -> None:
     client = FakeLLM([final_response(content)])
 
@@ -200,7 +198,7 @@ async def test_run_returns_string_for_empty_final_content(
 @pytest.mark.parametrize("finish_reason", ["tool_calls", "stop"])
 @pytest.mark.parametrize("content", ["我先执行工具。", "任务已经完成。\nEND_TASK"])
 async def test_run_replays_tool_result_before_accepting_end_marker(
-    registry: dict[str, dict[str, Any]],
+    registry: ToolRegistry,
     handler: Mock,
     finish_reason: str,
     content: str,
@@ -221,13 +219,13 @@ async def test_run_replays_tool_result_before_accepting_end_marker(
     assert history[-1] == {
         "role": "tool",
         "tool_call_id": call["id"],
-        "content": "工具观察",
+        "content": ToolResult(output="工具观察", status=ToolStatus.COMPLETED).model_dump_json(),
     }
     handler.assert_called_once_with(text="工具观察", repeat=1)
 
 
 async def test_run_replays_tool_failure_despite_same_turn_end_marker(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: ToolRegistry, handler: Mock
 ) -> None:
     """执行前生成的完成声明不能掩盖实际工具失败。"""
     handler.side_effect = RuntimeError("执行失败")
@@ -248,7 +246,7 @@ async def test_run_replays_tool_failure_despite_same_turn_end_marker(
 
 
 async def test_run_includes_resolved_workspace_in_system_prompt(
-    registry: dict[str, dict[str, Any]],
+    registry: ToolRegistry,
 ) -> None:
     workspace = Path.cwd() / "sample-workspace"
     client = FakeLLM([final_response()])
@@ -319,11 +317,15 @@ async def test_default_bash_rejects_model_environment_overrides(
 
     await Agent(client, workspace_dir=Path.cwd()).run("查看目录")
 
-    assert client.requests[1]["messages"][-1]["content"].startswith("工具参数错误")
+    result = ToolResult.model_validate_json(client.requests[1]["messages"][-1]["content"])
+    assert result.status == ToolStatus.ERROR
+    assert "工具参数错误" in result.output["error"]
     create_process.assert_not_awaited()
 
 
-async def test_bash_bindings_are_independent_for_agents_sharing_registry() -> None:
+async def test_default_bash_bindings_are_independent_between_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observations: list[tuple[Path, str]] = []
 
     async def handler(
@@ -332,8 +334,7 @@ async def test_bash_bindings_are_independent_for_agents_sharing_registry() -> No
         observations.append((workspace_dir, bash_path))
         return ToolResult(output=command, status=ToolStatus.COMPLETED)
 
-    shared_registry = create_builtin_registry()
-    shared_registry["bash"]["handler"] = handler
+    monkeypatch.setattr(builtin_module, "run_bash", handler)
     agents = []
     for name in ("first", "second"):
         client = FakeLLM(
@@ -342,9 +343,7 @@ async def test_bash_bindings_are_independent_for_agents_sharing_registry() -> No
                 final_response(),
             ]
         )
-        agents.append(
-            Agent(client, shared_registry, workspace_dir=Path(name), bash_path=f"{name}-bash")
-        )
+        agents.append(Agent(client, workspace_dir=Path(name), bash_path=f"{name}-bash"))
 
     for agent in agents:
         await agent.run("查看目录")
@@ -353,11 +352,11 @@ async def test_bash_bindings_are_independent_for_agents_sharing_registry() -> No
         (Path("first").resolve(), "first-bash"),
         (Path("second").resolve(), "second-bash"),
     ]
-    assert shared_registry["bash"]["handler"] is handler
+    assert builtin_module.run_bash is handler
 
 
 async def test_run_executes_tool_and_replays_call_and_result(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: ToolRegistry, handler: Mock
 ) -> None:
     call = tool_call(arguments='{"text":"你好","repeat":2}')
     client = FakeLLM([tool_response([call]), final_response("收到工具结果")])
@@ -374,7 +373,11 @@ async def test_run_executes_tool_and_replays_call_and_result(
     assert [message["role"] for message in history] == ["system", "user", "assistant", "tool"]
     assert history[-2]["content"] is None
     assert history[-2]["tool_calls"] == [call]
-    assert history[-1] == {"role": "tool", "tool_call_id": "call_1", "content": "你好你好"}
+    assert history[-1] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": ToolResult(output="你好你好", status=ToolStatus.COMPLETED).model_dump_json(),
+    }
 
 
 async def test_run_awaits_async_tool_and_serializes_result() -> None:
@@ -385,7 +388,8 @@ async def test_run_awaits_async_tool_and_serializes_result() -> None:
         await asyncio.sleep(0)
         return ToolResult(output={"text": text * repeat}, status=ToolStatus.COMPLETED)
 
-    registry = {"echo": {"description": "异步回显", "args_model": EchoArgs, "handler": handler}}
+    registry = ToolRegistry()
+    registry.register(ToolSpec("echo", "异步回显", EchoArgs, handler))
     client = FakeLLM([tool_response([tool_call()]), final_response("收到结果")])
 
     assert await Agent(client, registry, workspace_dir=Path.cwd()).run("调用异步工具") == "收到结果"
@@ -400,7 +404,7 @@ async def test_run_awaits_async_tool_and_serializes_result() -> None:
 
 
 async def test_run_replays_all_tool_results_before_next_request(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: ToolRegistry, handler: Mock
 ) -> None:
     calls = [
         tool_call("call_first", arguments='{"text":"第一"}'),
@@ -418,13 +422,21 @@ async def test_run_replays_all_tool_results_before_next_request(
     history = client.requests[1]["messages"]
     assert history[-3]["tool_calls"] == calls
     assert history[-2:] == [
-        {"role": "tool", "tool_call_id": "call_first", "content": "第一"},
-        {"role": "tool", "tool_call_id": "call_second", "content": "第二第二"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_first",
+            "content": ToolResult(output="第一", status=ToolStatus.COMPLETED).model_dump_json(),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_second",
+            "content": ToolResult(output="第二第二", status=ToolStatus.COMPLETED).model_dump_json(),
+        },
     ]
 
 
 async def test_run_returns_unknown_tool_error_to_model(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: ToolRegistry, handler: Mock
 ) -> None:
     client = FakeLLM([tool_response([tool_call(name="unknown")]), final_response()])
 
@@ -433,8 +445,10 @@ async def test_run_returns_unknown_tool_error_to_model(
     result = client.requests[1]["messages"][-1]
     assert result["role"] == "tool"
     assert result["tool_call_id"] == "call_1"
-    assert result["content"].startswith("工具错误")
-    assert "unknown" in result["content"]
+    observation = ToolResult.model_validate_json(result["content"])
+    assert observation.status == ToolStatus.ERROR
+    assert "未注册的工具" in observation.output["error"]
+    assert "unknown" in observation.output["error"]
     handler.assert_not_called()
 
 
@@ -444,7 +458,7 @@ async def test_run_returns_unknown_tool_error_to_model(
     ids=["invalid_json", "missing_required", "invalid_range", "unknown_parameter"],
 )
 async def test_run_returns_argument_validation_error_without_executing_tool(
-    registry: dict[str, dict[str, Any]], handler: Mock, arguments: str
+    registry: ToolRegistry, handler: Mock, arguments: str
 ) -> None:
     client = FakeLLM([tool_response([tool_call(arguments=arguments)]), final_response()])
 
@@ -453,13 +467,15 @@ async def test_run_returns_argument_validation_error_without_executing_tool(
     result = client.requests[1]["messages"][-1]
     assert result["role"] == "tool"
     assert result["tool_call_id"] == "call_1"
-    assert result["content"].startswith("工具参数错误")
+    observation = ToolResult.model_validate_json(result["content"])
+    assert observation.status == ToolStatus.ERROR
+    assert "工具参数错误" in observation.output["error"]
     handler.assert_not_called()
 
 
 @pytest.mark.parametrize("error", [FileNotFoundError("missing.txt"), RuntimeError("工具失败")])
 async def test_run_returns_tool_execution_error_to_model(
-    registry: dict[str, dict[str, Any]], handler: Mock, error: Exception
+    registry: ToolRegistry, handler: Mock, error: Exception
 ) -> None:
     handler.side_effect = error
     client = FakeLLM([tool_response([tool_call()]), final_response("已处理错误")])
@@ -468,13 +484,15 @@ async def test_run_returns_tool_execution_error_to_model(
 
     result = client.requests[1]["messages"][-1]
     assert result["tool_call_id"] == "call_1"
-    assert result["content"].startswith("工具执行错误")
-    assert type(error).__name__ in result["content"]
-    assert str(error) in result["content"]
+    observation = ToolResult.model_validate_json(result["content"])
+    assert observation.status == ToolStatus.ERROR
+    assert "工具执行错误" in observation.output["error"]
+    assert type(error).__name__ in observation.output["error"]
+    assert str(error) in observation.output["error"]
     handler.assert_called_once_with(text="你好", repeat=1)
 
 
-async def test_run_stops_at_max_steps(registry: dict[str, dict[str, Any]], handler: Mock) -> None:
+async def test_run_stops_at_max_steps(registry: ToolRegistry, handler: Mock) -> None:
     client = FakeLLM(
         [tool_response([tool_call(f"call_{index}")]) for index in range(3)]
         + [final_response("不应请求这一轮")]
@@ -492,7 +510,7 @@ async def test_run_stops_at_max_steps(registry: dict[str, dict[str, Any]], handl
 
 @pytest.mark.parametrize("finish_reason", ["length", "content_filter"])
 async def test_run_rejects_abnormal_response_without_executing_tool(
-    registry: dict[str, dict[str, Any]], handler: Mock, finish_reason: str
+    registry: ToolRegistry, handler: Mock, finish_reason: str
 ) -> None:
     client = FakeLLM([tool_response([tool_call()], finish_reason=finish_reason)])
     agent = Agent(client, registry, workspace_dir=Path.cwd())
@@ -507,7 +525,7 @@ async def test_run_rejects_abnormal_response_without_executing_tool(
 
 @pytest.mark.parametrize("content", [None, "总结\nEND_TASK"])
 async def test_run_rejects_tool_finish_without_calls(
-    registry: dict[str, dict[str, Any]], handler: Mock, content: str | None
+    registry: ToolRegistry, handler: Mock, content: str | None
 ) -> None:
     response = tool_response([])
     response.choices[0].message.content = content
@@ -520,9 +538,7 @@ async def test_run_rejects_tool_finish_without_calls(
     handler.assert_not_called()
 
 
-async def test_run_propagates_model_request_error(
-    registry: dict[str, dict[str, Any]], handler: Mock
-) -> None:
+async def test_run_propagates_model_request_error(registry: ToolRegistry, handler: Mock) -> None:
     error = RuntimeError("模型请求失败")
     client = FakeLLM([error])
 
@@ -534,9 +550,7 @@ async def test_run_propagates_model_request_error(
     handler.assert_not_called()
 
 
-async def test_run_propagates_tool_cancellation(
-    registry: dict[str, dict[str, Any]], handler: Mock
-) -> None:
+async def test_run_propagates_tool_cancellation(registry: ToolRegistry, handler: Mock) -> None:
     handler.side_effect = asyncio.CancelledError()
     client = FakeLLM([tool_response([tool_call()]), final_response("不应继续请求")])
     agent = Agent(client, registry, workspace_dir=Path.cwd())
@@ -549,7 +563,7 @@ async def test_run_propagates_tool_cancellation(
 
 
 async def test_run_preserves_history_between_user_turns(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: ToolRegistry, handler: Mock
 ) -> None:
     client = FakeLLM([final_response("第一轮答案"), final_response("第二轮答案")])
     agent = Agent(client, registry, workspace_dir=Path.cwd())
@@ -568,7 +582,7 @@ async def test_run_preserves_history_between_user_turns(
 
 
 async def test_run_executes_sync_tool_outside_event_loop_thread(
-    registry: dict[str, dict[str, Any]], handler: Mock
+    registry: ToolRegistry, handler: Mock
 ) -> None:
     event_loop_thread = threading.get_ident()
     executed_threads: list[int] = []

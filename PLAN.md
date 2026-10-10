@@ -1,8 +1,8 @@
 # code_agent 实施计划
 
-> 2026-10-09 修订：按学习价值、实际依赖和已有实现调整计划。
-> 当前进度：M0 已完成；M1 的代码与单元测试已具备，独立靶子仓库验收尚未完成。
-> 下一步：准备靶子仓库，通过 CLI 完成一次“修改代码、失败测试变绿”的真实任务。
+> 2026-10-10 更新：用户确认 M1 验收通过，进入 M2a。
+> 当前进度：M0、M1 已完成；M2a 的 ToolSpec / ToolRegistry 和 Agent 接线已实现，完整回归 133 项通过，Ruff 检查通过。
+> 下一步：整理历史、事件和 finish_task 协议。
 
 ## 1. 项目定位与范围
 
@@ -94,9 +94,11 @@ src/code_agent/
 
 已有配置、LiteLLM 接入、CLI 入口、事件与目录骨架、pytest/Ruff。历史验收是 --version 和最小文本响应；当前 CLI 已演进为 Agent 路径，不重复实施 M0。
 
-### M1 最小编程任务闭环〔实现已具备，等待真实任务验收〕
+### M1 最小编程任务闭环〔已验收〕
 
 已有非流式循环、参数校验、错误回灌、最大请求轮数、异步 Bash、统一结果、工作目录绑定、输出预算、启动错误处理和 CLI 显示。最近完整基线为 117 项测试通过。
+
+2026-10-10 独立复核 code_agent_target：只修改 math_utils.py 增加空列表返回 0.0，测试文件未改，5 项测试全部通过。用户确认进入下一阶段。基线标签 m1-baseline 保留，可用于重复验收。
 
 **保留的 Bash 契约：**
 
@@ -129,6 +131,15 @@ src/code_agent/
 ### M2a 工具、历史、事件与结构化结束协议〔A/B/D/H〕
 
 先沿用非流式响应整理协议，再进行流式改造：
+
+已完成 tools/spec.py 的 ToolSpec 数据定义和 to_schema，以及 tools/registry.py 的 register/model_tools/execute；内置工具工厂与 Agent 已接入注册表，旧字典和 Agent 内部重复执行逻辑已移除。工具层 16 项测试通过，完整回归 133 项通过，Ruff 检查与格式检查通过；历史、事件和 finish_task 协议仍待实现。
+
+- register 拒绝重名注册，model_tools 按注册顺序生成定义，handler 不进入模型 schema。
+- execute 接收 name 和 JSON 参数字符串，返回 ToolResult；未知工具、参数错误、执行错误统一为 ERROR，原因放入 output.error。
+- 参数校验和执行异常分开处理；校验失败不调用 handler。已有 ToolResult 保留原状态与截断标志；旧字符串/JSON 输出包装为 completed。
+- 支持异步函数、同步函数和返回 awaitable 的可调用对象；取消继续传播。核心保留执行环境绑定、调用 ID 配对、消息追加及序列化职责。
+- 首个失败测试 test_execute_returns_structured_validation_error_without_running_handler：参数越界时返回可序列化错误结果，handler 不被执行。
+- 内置工厂使用 partial 绑定规范化的 workspace_dir 与 bash_path；BashArgs 只暴露 command 和 timeout_seconds。Agent 使用 model_tools 生成定义，execute 返回结果经 model_dump_json 回灌到对应调用 ID；处理完本轮全部工具调用后继续请求模型。
 
 - 从 Agent 中抽出 tools/registry.py、tools/spec.py：注册、schema、参数校验和统一执行结果；不预先实现 MCP 适配层。
 - context/history.py 管理消息追加、工具调用/结果配对、任务中断后的有效历史；没有完成执行的调用不能留成可继续的悬空记录。

@@ -54,7 +54,7 @@ async def run_bash(
     timeout_seconds: int = 30,
     *,
     workspace_dir: Path,
-    bash_path: str,
+    bash_path: str | None = None,
 ) -> ToolResult:
     """运行一次独立 Bash 命令并返回结构化工具结果(M1 继续完善)。
 
@@ -68,6 +68,7 @@ async def run_bash(
     3. 加入超时、取消与进程树清理;输出缓冲限制为 MAX_OUTPUT_CHARS。
     4. 非零退出正常回传;超时标记 timed_out,exit_code 为 null。
     """
+    bash_path = "bash" if bash_path is None else bash_path
     try:
         process = await asyncio.create_subprocess_exec(
             bash_path,

@@ -1,19 +1,29 @@
 """工具系统(D):内置工具实现。"""
 
+from functools import partial
+from pathlib import Path
+
 from .files import ReadFileArgs, read_file
 from .shell import BashArgs, run_bash
 
 __all__ = ["BashArgs", "ReadFileArgs", "create_builtin_registry", "read_file", "run_bash"]
 
+from ..registry import ToolRegistry
+from ..spec import ToolSpec
 
-def create_builtin_registry() -> dict:
-    return {
-        "bash": {
-            "description": (
-                "在应用指定的工作目录执行 Bash 命令，返回 stdout、stderr 和退出码。"
-                "每次调用是独立进程，cd 和 export 不跨调用保留。"
+
+def create_builtin_registry(*, workspace_dir: Path, bash_path: str = "bash") -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="bash",
+            description="在指定工作目录执行 Bash 命令",
+            args_model=BashArgs,
+            handler=partial(
+                run_bash,
+                workspace_dir=workspace_dir,
+                bash_path=bash_path,
             ),
-            "args_model": BashArgs,
-            "handler": run_bash,
-        }
-    }
+        )
+    )
+    return registry
