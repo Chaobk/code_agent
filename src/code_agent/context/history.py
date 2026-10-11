@@ -53,10 +53,13 @@ class ConversationHistory:
                     raise ValueError("工具调用必须使用 function 格式")
 
                 try:
-                    call = ToolCall(
-                        id=raw["id"],
-                        name=raw["function"]["name"],
-                        arguments=raw["function"]["arguments"],
+                    call = ToolCall.model_validate(
+                        {
+                            "id": raw["id"],
+                            "name": raw["function"]["name"],
+                            "arguments": raw["function"]["arguments"],
+                        },
+                        strict=True,
                     )
                 except (KeyError, TypeError, ValueError) as exc:
                     raise ValueError("工具调用结构不完整或字段类型错误") from exc

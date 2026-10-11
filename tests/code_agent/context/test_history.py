@@ -161,6 +161,25 @@ def test_history_keeps_invalid_argument_json_for_registry_to_handle() -> None:
     assert history.get_messages() == [message]
 
 
+@pytest.mark.parametrize("field", ["id", "name", "arguments"])
+def test_invalid_call_field_type_does_not_change_history_or_pending(field: str) -> None:
+    history = ConversationHistory()
+    history.add_message({"role": "user", "content": "执行任务"})
+    messages = history.get_messages()
+    pending = history.get_pending_calls()
+    invalid_call = tool_call("invalid")
+    if field == "id":
+        invalid_call[field] = b"invalid"
+    else:
+        invalid_call["function"][field] = b"invalid"
+
+    with pytest.raises(ValueError, match="字段类型错误"):
+        history.add_message(assistant_with_calls(tool_call("valid"), invalid_call))
+
+    assert history.get_model_messages() == messages
+    assert history.get_pending_calls() == pending
+
+
 @pytest.mark.parametrize(
     "message",
     [
