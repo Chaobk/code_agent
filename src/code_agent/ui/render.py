@@ -42,7 +42,7 @@ def print_history(
     console = console if console is not None else Console()
     tool_names: dict[str, str] = {}
     displayed = False
-    for index, message in enumerate(messages, start=1):
+    for index, message in enumerate(messages, start=0):
         role = message.get("role", "unknown")
         if role == "system" and not show_system:
             continue
@@ -56,7 +56,7 @@ def print_history(
         content = message.get("content")
         if (
             final_answer is not None
-            and index == len(messages)
+            and index == len(messages) - 1
             and role == "assistant"
             and not message.get("tool_calls")
         ):

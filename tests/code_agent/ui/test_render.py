@@ -85,7 +85,7 @@ def test_print_history_can_hide_system_and_handles_empty_history() -> None:
 
     text = output.getvalue()
     assert "系统提示" not in text
-    assert "02 · 用户" in text
+    assert "01 · 用户" in text
     assert "你好" in text
     assert "暂无可显示的历史消息。" in text
 
