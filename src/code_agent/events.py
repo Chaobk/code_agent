@@ -122,15 +122,6 @@ class ToolCallEvent(AgentEvent):
     tool_call: ToolCall
 
 
-class ToolResultEvent(AgentEvent):
-    """一次工具调用的结果。"""
-
-    type: Literal[EventType.TOOL_RESULT] = EventType.TOOL_RESULT
-    tool_call_id: str
-    output: str
-    is_error: bool = False
-
-
 class StepStarted(AgentEvent):
     """一步(一次模型往返)开始。"""
 
@@ -171,7 +162,6 @@ AnyEvent = (
     TextDelta
     | AssistantMessage
     | ToolCallEvent
-    | ToolResultEvent
     | StepStarted
     | StepFinished
     | RunFinished
