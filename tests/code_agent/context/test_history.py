@@ -31,7 +31,7 @@ def test_model_history_rejects_unpaired_calls_but_display_history_is_available()
 
     assert history.get_messages() == [message]
     assert history.get_pending_calls()["call_1"].name == "bash"
-    with pytest.raises(RuntimeError, match="工具调用"):
+    with pytest.raises(RuntimeError, match="尚未配对结果"):
         history.get_model_messages()
 
 

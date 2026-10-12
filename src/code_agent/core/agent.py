@@ -16,7 +16,8 @@ import asyncio
 from pathlib import Path
 
 from code_agent.config import Settings, load_settings
-from code_agent.events import Role
+from code_agent.context.history import ConversationHistory
+from code_agent.events import Role, ToolExecutionCancelled, ToolResult, ToolStatus
 from code_agent.llm.client import LLMClient
 from code_agent.tools.builtin import create_builtin_registry
 from code_agent.tools.registry import ToolRegistry
@@ -73,12 +74,15 @@ class Agent:
         system_prompt = SYSTEM_PROMPT.format(
             workspace_dir=self.workspace_dir, tools=tool_description
         )
-        self.messages = [{"role": "system", "content": system_prompt}]
+        self.history = ConversationHistory()
+        self.history.add_message({"role": "system", "content": system_prompt})
 
     async def run(self, prompt: str) -> str:
-        self.messages.append({"role": "user", "content": prompt})
+        self.history.add_message({"role": "user", "content": prompt})
         for _ in range(self.max_steps):
-            response = await self.client.complete_turn(self.messages, tools=self.tools)
+            response = await self.client.complete_turn(
+                self.history.get_model_messages(), tools=self.tools
+            )
             choice = response.choices[0]
 
             if choice.finish_reason not in ("stop", "tool_calls"):
@@ -86,20 +90,36 @@ class Agent:
 
             message = choice.message
 
-            self.messages.append(message.model_dump())
+            self.history.add_message(message.model_dump())
 
             if message.tool_calls:
                 for call in message.tool_calls:
-                    output = await self.registry.execute(
-                        call.function.name, call.function.arguments
-                    )
-                    self.messages.append(
-                        {
-                            "role": Role.TOOL.value,
-                            "tool_call_id": call.id,
-                            "content": output.model_dump_json(),
-                        }
-                    )
+                    try:
+                        output = await self.registry.execute(
+                            call.function.name, call.function.arguments
+                        )
+                    except asyncio.CancelledError as exc:
+                        for pending_id in self.history.get_pending_calls():
+                            is_current = pending_id == call.id
+
+                            if is_current and isinstance(exc, ToolExecutionCancelled):
+                                observation = exc.observation
+                            else:
+                                observation = ToolResult(
+                                    status=ToolStatus.ERROR,
+                                    output={
+                                        "reason": "interrupted",
+                                        "execution": ("unknown" if is_current else "not_started"),
+                                        "error": (
+                                            "调用被中断，未取得可确认的执行结果"
+                                            if is_current
+                                            else "本轮已中断，此调用尚未启动"
+                                        ),
+                                    },
+                                )
+                            self._append_tool_result(pending_id, observation)
+                        raise
+                    self._append_tool_result(call.id, output)
                 # 有工具调用的话，不能直接结束，需要模型判断工具的执行结果
                 continue
 
@@ -113,6 +133,11 @@ class Agent:
                 return "\n".join(lines[:-1]).rstrip()
 
         raise RuntimeError(f"达到最大请求轮数：{self.max_steps}")
+
+    def _append_tool_result(self, call_id: str, result: ToolResult) -> None:
+        self.history.add_message(
+            {"role": Role.TOOL.value, "tool_call_id": call_id, "content": result.model_dump_json()}
+        )
 
 
 def create_agent(settings: Settings) -> Agent:
@@ -139,4 +164,4 @@ if __name__ == "__main__":
         bash_path=settings.bash_path,
     )
     asyncio.run(agent.run(r"帮我在当前目录写一个markdown文件，内容就是agent的学习路径"))
-    print_history(agent.messages)
+    print_history(agent.history.get_model_messages())

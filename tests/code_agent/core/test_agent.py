@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from code_agent.config import Settings
 from code_agent.core.agent import Agent
-from code_agent.events import ToolResult, ToolStatus
+from code_agent.events import ToolExecutionCancelled, ToolResult, ToolStatus
 from code_agent.llm import client as client_module
 from code_agent.tools import builtin as builtin_module
 from code_agent.tools.builtin import shell as shell_module
@@ -131,8 +131,8 @@ async def test_run_returns_final_answer_and_sends_serializable_tools(
     assert function["parameters"]["properties"]["repeat"]["default"] == 1
     assert "handler" not in function
     assert json.loads(json.dumps(request["tools"])) == request["tools"]
-    assert agent.messages[-1]["role"] == "assistant"
-    assert agent.messages[-1]["content"] == "最终答案\nEND_TASK"
+    assert agent.history.get_model_messages()[-1]["role"] == "assistant"
+    assert agent.history.get_model_messages()[-1]["content"] == "最终答案\nEND_TASK"
     handler.assert_not_called()
 
 
@@ -167,7 +167,10 @@ async def test_run_removes_final_end_marker_from_returned_summary(
     assert await agent.run("执行任务") == "已完成修改。\n测试全部通过。"
 
     assert len(client.requests) == 1
-    assert agent.messages[-1]["content"] == "已完成修改。\n测试全部通过。\nEND_TASK\n\n"
+    assert (
+        agent.history.get_model_messages()[-1]["content"]
+        == "已完成修改。\n测试全部通过。\nEND_TASK\n\n"
+    )
     handler.assert_not_called()
 
 
@@ -505,7 +508,12 @@ async def test_run_stops_at_max_steps(registry: ToolRegistry, handler: Mock) -> 
     assert "3" in str(caught.value)
     assert len(client.requests) == 3
     assert handler.call_count == 3
-    assert len([message for message in agent.messages if message["role"] == "tool"]) == 3
+    assert (
+        len(
+            [message for message in agent.history.get_model_messages() if message["role"] == "tool"]
+        )
+        == 3
+    )
 
 
 @pytest.mark.parametrize("finish_reason", ["length", "content_filter"])
@@ -519,7 +527,7 @@ async def test_run_rejects_abnormal_response_without_executing_tool(
         await agent.run("调用工具")
 
     assert len(client.requests) == 1
-    assert [message["role"] for message in agent.messages] == ["system", "user"]
+    assert [message["role"] for message in agent.history.get_model_messages()] == ["system", "user"]
     handler.assert_not_called()
 
 
@@ -559,7 +567,122 @@ async def test_run_propagates_tool_cancellation(registry: ToolRegistry, handler:
         await agent.run("调用工具")
 
     assert len(client.requests) == 1
-    assert not any(message["role"] == "tool" for message in agent.messages)
+    handler.assert_called_once()
+    assert agent.history.get_pending_calls() == {}
+
+    messages = agent.history.get_model_messages()
+    assert [message["role"] for message in messages] == ["system", "user", "assistant", "tool"]
+    assert messages[-1]["tool_call_id"] == "call_1"
+
+    observation = ToolResult.model_validate_json(messages[-1]["content"])
+    assert observation.status == ToolStatus.ERROR
+    assert isinstance(observation.output, dict)
+    assert observation.output["reason"] == "interrupted"
+    assert observation.output["execution"] == "unknown"
+
+
+@pytest.mark.parametrize("cancel_index", [0, 1, 2], ids=["first", "middle", "last"])
+async def test_run_pairs_cancelled_batch_and_can_resume(cancel_index: int) -> None:
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+    executed: list[str] = []
+    texts = ["first", "second", "third"]
+
+    async def execute(text: str, repeat: int = 1) -> str:
+        executed.append(text)
+        if text == texts[cancel_index]:
+            started.set()
+            await blocked.wait()
+        return f"done:{text}"
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec("echo", "Return text", EchoArgs, execute))
+    calls = [
+        tool_call(f"call_{index}", arguments=json.dumps({"text": text}))
+        for index, text in enumerate(texts)
+    ]
+    client = FakeLLM([tool_response(calls), final_response("resumed")])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    task = asyncio.create_task(agent.run("execute batch"))
+
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert executed == texts[: cancel_index + 1]
+    assert len(client.requests) == 1
+    assert agent.history.get_pending_calls() == {}
+    history = agent.history.get_model_messages()
+    results = [message for message in history if message["role"] == "tool"]
+    assert [message["tool_call_id"] for message in results] == [call["id"] for call in calls]
+
+    for index, message in enumerate(results):
+        observation = ToolResult.model_validate_json(message["content"])
+        if index < cancel_index:
+            assert observation.status == ToolStatus.COMPLETED
+            assert observation.output == f"done:{texts[index]}"
+        else:
+            assert observation.status == ToolStatus.ERROR
+            assert isinstance(observation.output, dict)
+            assert observation.output["reason"] == "interrupted"
+            expected = "unknown" if index == cancel_index else "not_started"
+            assert observation.output["execution"] == expected
+
+    assert await agent.run("continue") == "resumed"
+    assert len(client.requests) == 2
+    assert client.requests[1]["messages"] == [*history, {"role": "user", "content": "continue"}]
+    assert executed == texts[: cancel_index + 1]
+
+
+async def test_run_preserves_observation_from_cancelled_tool() -> None:
+    observation = ToolResult(
+        output={
+            "reason": "interrupted",
+            "stdout": "partial output",
+            "stderr": "",
+            "exit_code": None,
+        },
+        status=ToolStatus.ERROR,
+        truncated=True,
+    )
+    cancellation = ToolExecutionCancelled(observation)
+    handler = AsyncMock(side_effect=cancellation)
+    registry = ToolRegistry()
+    registry.register(ToolSpec("echo", "Return text", EchoArgs, handler))
+    client = FakeLLM(
+        [
+            tool_response(
+                [
+                    tool_call("current", arguments=json.dumps({"text": "first"})),
+                    tool_call("remaining", arguments=json.dumps({"text": "second"})),
+                ]
+            )
+        ]
+    )
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+
+    with pytest.raises(ToolExecutionCancelled) as caught:
+        await agent.run("execute batch")
+
+    assert caught.value is cancellation
+    handler.assert_awaited_once_with(text="first", repeat=1)
+    assert len(client.requests) == 1
+    assert agent.history.get_pending_calls() == {}
+    results = [
+        message for message in agent.history.get_model_messages() if message["role"] == "tool"
+    ]
+    assert [message["tool_call_id"] for message in results] == ["current", "remaining"]
+    assert ToolResult.model_validate_json(results[0]["content"]) == observation
+    remaining = ToolResult.model_validate_json(results[1]["content"])
+    assert remaining.status == ToolStatus.ERROR
+    assert isinstance(remaining.output, dict)
+    assert remaining.output["reason"] == "interrupted"
+    assert remaining.output["execution"] == "not_started"
 
 
 async def test_run_preserves_history_between_user_turns(

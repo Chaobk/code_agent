@@ -97,5 +97,5 @@ class ConversationHistory:
 
     def get_model_messages(self) -> list[dict[str, Any]]:
         if self._pending_calls:
-            raise RuntimeError("存在尚未配对的工具调用")
+            raise RuntimeError("尚未配对结果")
         return self.get_messages()

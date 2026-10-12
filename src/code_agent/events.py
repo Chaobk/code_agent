@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -156,6 +157,14 @@ class ErrorEvent(AgentEvent):
 
     type: Literal[EventType.ERROR] = EventType.ERROR
     message: str
+
+
+class ToolExecutionCancelled(asyncio.CancelledError):
+    """取消执行，同时携带已取得的观察"""
+
+    def __init__(self, observation: ToolResult) -> None:
+        super().__init__("工具执行被取消")
+        self.observation = observation
 
 
 AnyEvent = (

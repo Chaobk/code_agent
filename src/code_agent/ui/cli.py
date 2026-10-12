@@ -54,7 +54,7 @@ async def _run_once(prompt: str, settings: Settings) -> int:
     try:
         answer = await agent.run(prompt)
     except Exception as exc:
-        print_history(agent.messages, show_system=False, console=console)
+        print_history(agent.history.get_messages(), show_system=False, console=console)
         console.print(
             f"调用失败: {type(exc).__name__}: {exc}",
             style="bold red",
@@ -64,7 +64,7 @@ async def _run_once(prompt: str, settings: Settings) -> int:
         return 1
 
     print_history(
-        agent.messages,
+        agent.history.get_model_messages(),
         show_system=False,
         final_answer=answer,
         console=console,
