@@ -93,7 +93,7 @@ def test_prompt_runs_bash_through_agent_and_displays_history(
                 choices=[
                     {
                         "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": "检查完成[bold]\nEND_TASK"},
+                        "message": {"role": "assistant", "content": "检查完成[bold]"},
                     }
                 ]
             ),
@@ -143,7 +143,7 @@ def test_prompt_displays_final_answer_without_tools(monkeypatch: pytest.MonkeyPa
         choices=[
             {
                 "finish_reason": "stop",
-                "message": {"role": "assistant", "content": "你好[bold]\nEND_TASK"},
+                "message": {"role": "assistant", "content": "你好[bold]"},
             }
         ]
     )
@@ -159,6 +159,27 @@ def test_prompt_displays_final_answer_without_tools(monkeypatch: pytest.MonkeyPa
     request.assert_awaited_once()
     assert request.await_args.kwargs["stream"] is False
     assert [tool["function"]["name"] for tool in request.await_args.kwargs["tools"]] == ["bash"]
+
+
+def test_prompt_preserves_old_marker_as_literal_final_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(_env_file=None, DEEPSEEK_API_KEY="test-key")
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    response = ModelResponse(
+        choices=[
+            {
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "示例[bold]\nEND_TASK"},
+            }
+        ]
+    )
+    request = AsyncMock(return_value=response)
+    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+
+    result = runner.invoke(app, ["-p", "展示标记示例"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "示例[bold]\nEND_TASK" in result.stdout
+    request.assert_awaited_once()
 
 
 def test_prompt_reports_model_error(monkeypatch: pytest.MonkeyPatch) -> None:

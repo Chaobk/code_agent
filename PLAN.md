@@ -1,8 +1,8 @@
 # code_agent 实施计划
 
 > 2026-10-12 更新：参考 Datawhale Hello-Agents 补充阅读、实验与复盘安排；按用户补充要求，将记忆系统、多 Agent 协作与通信列为核心学习内容，主线扩展到 M8，保留用户手写核心的分工。
-> 当前进度：M0、M1 已验收；M2a 的 ToolSpec / ToolRegistry、工具接线、ConversationHistory、Agent 历史接线与取消配对已实现。后两项见提交 fd1e4d1；156 项通过是此前文档记录，本次仅修订学习计划，未复跑回归。
-> 下一步：验证 finish_reason=stop 且无工具调用的原生结束协议，完成 M2a 非流式验收，再进入 M2b；finish_task 改为按真实需要引入的增强。
+> 当前进度：M0、M1 已验收；M2a 的 ToolSpec / ToolRegistry、工具接线、ConversationHistory、Agent 历史接线与取消配对已实现。历史接线与取消配对见提交 fd1e4d1；原生结束协议与回归测试已实现，2026-10-12 完整回归 174 项通过，Ruff 检查及源码和测试格式检查通过。
+> 下一步：完成 M2a 独立靶子的非流式验收，用户确认后再进入 M2b；finish_task 改为按真实需要引入的增强。
 
 ## 1. 项目定位与范围
 
@@ -130,7 +130,7 @@ src/code_agent/
 - output 包含 stdout、stderr、原始 exit_code；正常非零退出也属于 completed，作为有效观察回灌。启动失败为 error；超时为 timed_out、exit_code=null。
 - 超时或取消时尽力清理已发现的进程树；取消继续传播。现有 psutil 清理是后代快照，不宣称具备严格的进程组或 Job Object 隔离。
 
-**临时结束协议：**
+**M1 验收时的临时结束协议（M2a 已替换）：**
 
 - 每轮先检查结束原因；length/content_filter 等异常不能作为成功结束。
 - 同轮有工具调用时，保存文本与调用，执行全部调用并回灌结果，然后继续请求。该轮文本中的 END_TASK 不能结束任务。
@@ -154,7 +154,7 @@ src/code_agent/
 
 先沿用非流式响应整理协议，再进行流式改造：
 
-已完成 tools/spec.py 的 ToolSpec 数据定义和 to_schema，以及 tools/registry.py 的 register/model_tools/execute；内置工具工厂与 Agent 已接入注册表，旧字典和 Agent 内部重复执行逻辑已移除。ConversationHistory 的四个公开方法已实现，Agent 与 CLI 已接入历史接口，取消时补齐调用观察并传播取消。工具层 16 项、历史模块 23 项及完整回归 156 项通过是接线前的记录；接线实现与新增测试见 fd1e4d1。本轮文档维护未重跑代码测试，原生结束路径仍待回归与真实验收。
+已完成 tools/spec.py 的 ToolSpec 数据定义和 to_schema，以及 tools/registry.py 的 register/model_tools/execute；内置工具工厂与 Agent 已接入注册表，旧字典和 Agent 内部重复执行逻辑已移除。ConversationHistory 的四个公开方法已实现，Agent 与 CLI 已接入历史接口，取消时补齐调用观察并传播取消。工具层 16 项、历史模块 23 项及完整回归 156 项通过是接线前的记录；接线实现与新增测试见 fd1e4d1。原生结束路径已实现并补齐 None/空列表、空正文、原文保留、异常响应及步数边界测试，2026-10-12 完整回归 174 项通过；仍待独立靶子真实验收。
 
 - register 拒绝重名注册，model_tools 按注册顺序生成定义，handler 不进入模型 schema。
 - execute 接收 name 和 JSON 参数字符串，返回 ToolResult；未知工具、参数错误、执行错误统一为 ERROR，原因放入 output.error。

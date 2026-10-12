@@ -15,13 +15,12 @@ M2a 将当前演示入口的终端渲染依赖移出核心业务模块。
 import asyncio
 from pathlib import Path
 
-from code_agent.config import Settings, load_settings
+from code_agent.config import Settings
 from code_agent.context.history import ConversationHistory
 from code_agent.events import Role, ToolExecutionCancelled, ToolResult, ToolStatus
 from code_agent.llm.client import LLMClient
 from code_agent.tools.builtin import create_builtin_registry
 from code_agent.tools.registry import ToolRegistry
-from code_agent.ui.render import print_history
 
 SYSTEM_PROMPT = """
     你是一个编码助手，要尽力完成用户的任务
@@ -35,13 +34,6 @@ SYSTEM_PROMPT = """
 
     可用工具:
     {tools}
-
-    结束判断：
-    - 本轮有工具调用时，可以说明操作意图，但不得输出 END_TASK。
-    - 工具执行后，必须根据返回结果判断是否需要继续操作，不得预先假设执行成功。
-    - 只有在没有工具调用的回复中，才能明确结束任务。
-    - 结束时先总结实际结果；无法继续时说明阻塞原因。
-    - 最后独立一行输出 END_TASK。
 """
 
 
@@ -126,11 +118,11 @@ class Agent:
             if choice.finish_reason == "tool_calls":
                 raise RuntimeError("模型报告工具调用，但没有返回调用信息")
 
-            content = message.content or ""
-            lines = content.rstrip().splitlines()
-
-            if lines and lines[-1] == "END_TASK":
-                return "\n".join(lines[:-1]).rstrip()
+            # 如果没有工具嗲用并且finish_reason==“stop”，就可以认定为当前任务结束
+            if choice.finish_reason == "stop" and (
+                message.tool_calls is None or message.tool_calls == []
+            ):
+                return message.content or ""
 
         raise RuntimeError(f"达到最大请求轮数：{self.max_steps}")
 
@@ -152,16 +144,3 @@ def create_agent(settings: Settings) -> Agent:
         workspace_dir=settings.workspace_dir,
         bash_path=settings.bash_path,
     )
-
-
-if __name__ == "__main__":
-    settings = load_settings()
-    client = LLMClient(settings)
-    agent = Agent(
-        client,
-        max_steps=settings.max_steps,
-        workspace_dir=settings.workspace_dir,
-        bash_path=settings.bash_path,
-    )
-    asyncio.run(agent.run(r"帮我在当前目录写一个markdown文件，内容就是agent的学习路径"))
-    print_history(agent.history.get_model_messages())

@@ -36,7 +36,7 @@ def print_history(
 
     show_system=False 可隐藏系统提示词;console 可传入自定义输出目标。
     final_answer 非 None 时仅替换末条无工具调用助手消息的显示正文,不修改历史。
-    核心负责识别结束标记和提取总结,渲染层不判断任务是否结束。
+    核心负责结束判断并返回最终回复,渲染层不判断任务是否结束。
     正文按原始文本呈现,避免把代码中的方括号当作 Rich 标记。
     """
     console = console if console is not None else Console()
