@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-`code_agent` 是用于学习编程 Agent 原理的 Python 项目。M0、M1 已完成，用户已确认独立靶子验收通过；当前处于 M2a，ToolSpec、ToolRegistry、工具接线和 ConversationHistory 已实现，完整回归 156 项通过。History 尚未接入 Agent，下一步完成历史接线与中断配对收尾，再整理事件和 `finish_task` 协议。默认只提供 `bash`，不限制单轮工具调用数量。M2b 接流式输出，M4 增加多轮会话，M5 做轨迹、恢复与项目记忆，M6 再抽模式接口。核心由用户手写，Codex 提供规格、接口、测试和评审。调整能力边界或里程碑前，先阅读 `PLAN.md` 的设计决策、验收标准与协作分工。
+`code_agent` 是用于学习编程 Agent 原理的 Python 项目。M0、M1 已完成，用户已确认独立靶子验收通过；当前处于 M2a，History 已接入 Agent 并补齐取消时的工具观察，下一步验证“正常 stop 且无工具调用即结束”的协议并完成非流式验收；`finish_task` 按需增强，流式事件在 M2b 设计。默认只提供 `bash`，不限制单轮工具调用数量。核心由用户手写，Codex 提供规格、接口、测试和评审。安排学习步骤或调整能力边界、里程碑前，先阅读 `PLAN.md` 的当前进度、设计决策、验收标准与协作分工；记忆系统、知识检索、多 Agent 协作与通信属于核心学习主线，章节对应和深化选题也以该计划为准。
 
 - `src/code_agent/`：应用源码；`config.py` 加载配置，`events.py` 定义共享消息与事件模型。
 - `llm/`：封装 LiteLLM；`ui/`：纯命令行交互，`cli.py` 为入口，`repl.py`、`render.py`、`prompts.py` 为后续会话、输出与确认模块。
