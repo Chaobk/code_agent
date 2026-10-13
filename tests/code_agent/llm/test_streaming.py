@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from litellm.types.utils import ModelResponseStream
 
-from code_agent.core.streaming import TurnAssembler
+from code_agent.llm.streaming import TurnAssembler
 
 
 def text_chunk(

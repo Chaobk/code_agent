@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+from collections.abc import AsyncIterator
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from litellm.types.utils import ModelResponse
+from litellm.types.utils import ModelResponse, ModelResponseStream
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_agent.config import Settings
@@ -31,13 +32,18 @@ class EchoArgs(BaseModel):
 
 
 class FakeLLM:
-    """依次返回预设响应，并保存请求当时的快照。"""
+    """依次产出预设流，完整响应转为分片，保存请求当时的快照。"""
 
-    def __init__(self, responses: list[ModelResponse | BaseException]) -> None:
+    def __init__(
+        self,
+        responses: list[ModelResponse | BaseException | list[ModelResponseStream | BaseException]],
+    ) -> None:
         self._responses = iter(responses)
         self.requests: list[dict[str, Any]] = []
 
-    async def complete_turn(self, messages: list[dict[str, Any]], **kwargs: Any) -> ModelResponse:
+    async def stream_turn(
+        self, messages: list[dict[str, Any]], **kwargs: Any
+    ) -> AsyncIterator[ModelResponseStream]:
         self.requests.append(deepcopy({"messages": messages, **kwargs}))
         try:
             response = next(self._responses)
@@ -45,7 +51,24 @@ class FakeLLM:
             raise AssertionError("Agent 发起了预期之外的模型请求") from exc
         if isinstance(response, BaseException):
             raise response
-        return response
+        if isinstance(response, ModelResponse):
+            choice = response.choices[0]
+            message = choice.message
+            delta: dict[str, Any] = {"role": "assistant", "content": message.content}
+            if message.tool_calls:
+                delta["tool_calls"] = [
+                    {"index": index, **call.model_dump()}
+                    for index, call in enumerate(message.tool_calls)
+                ]
+            response = [
+                ModelResponseStream(
+                    choices=[{"delta": delta, "finish_reason": choice.finish_reason}]
+                )
+            ]
+        for chunk in response:
+            if isinstance(chunk, BaseException):
+                raise chunk
+            yield chunk
 
 
 def assistant_response(content: str | None) -> ModelResponse:
@@ -160,7 +183,7 @@ async def test_run_finishes_on_normal_response_without_tool_calls(
     assert len(client.requests) == 1
     history = agent.history.get_model_messages()
     assert [message["role"] for message in history] == ["system", "user", "assistant"]
-    assert history[-1]["content"] == content
+    assert history[-1]["content"] == (content or "")
     handler.assert_not_called()
 
 
@@ -396,7 +419,7 @@ async def test_run_executes_tool_and_replays_call_and_result(
     assert second_request["tools"] == client.requests[0]["tools"]
     history = second_request["messages"]
     assert [message["role"] for message in history] == ["system", "user", "assistant", "tool"]
-    assert history[-2]["content"] is None
+    assert history[-2]["content"] == ""
     assert history[-2]["tool_calls"] == [call]
     assert history[-1] == {
         "role": "tool",
@@ -751,3 +774,270 @@ async def test_run_executes_sync_tool_outside_event_loop_thread(
 
     assert len(executed_threads) == 1
     assert executed_threads[0] != event_loop_thread
+
+
+def stream_chunk(
+    content: str | None = None,
+    *,
+    calls: list[dict[str, Any]] | None = None,
+    finish_reason: str | None = None,
+) -> ModelResponseStream:
+    """构造原始分片；参数是否完整由组装器和注册表分别判断。"""
+    return ModelResponseStream(
+        choices=[
+            {
+                "delta": {"content": content, "tool_calls": calls},
+                "finish_reason": finish_reason,
+            }
+        ]
+    )
+
+
+async def test_run_assembles_text_and_consumes_trailing_usage(
+    registry: ToolRegistry, handler: Mock
+) -> None:
+    client = FakeLLM(
+        [
+            [
+                ModelResponseStream(choices=[{"delta": {"role": "assistant"}}]),
+                stream_chunk("  分片"),
+                stream_chunk("正文\n", finish_reason="stop"),
+                ModelResponseStream(
+                    choices=[],
+                    usage={"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+                ),
+            ]
+        ]
+    )
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+
+    assert await agent.run("回答问题") == "  分片正文\n"
+
+    assert len(client.requests) == 1
+    assert agent.history.get_model_messages()[-1] == {
+        "role": "assistant",
+        "content": "  分片正文\n",
+    }
+    handler.assert_not_called()
+
+
+async def test_run_executes_interleaved_calls_once_in_index_order(
+    registry: ToolRegistry, handler: Mock
+) -> None:
+    client = FakeLLM(
+        [
+            [
+                stream_chunk(
+                    "准备执行",
+                    calls=[
+                        {"index": 1, **tool_call("second", arguments='{"text":')},
+                        {"index": 0, **tool_call("first", arguments='{"text":')},
+                    ],
+                ),
+                stream_chunk(calls=[{"index": 1, "function": {"arguments": '"第二"}'}}]),
+                stream_chunk(
+                    calls=[{"index": 0, "function": {"arguments": '"第一"}'}}],
+                    finish_reason="tool_calls",
+                ),
+            ],
+            final_response("观察已齐全"),
+        ]
+    )
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+
+    assert await agent.run("执行两个工具") == "观察已齐全"
+
+    assert [call.kwargs["text"] for call in handler.call_args_list] == ["第一", "第二"]
+    assert len(client.requests) == 2
+    messages = client.requests[1]["messages"]
+    assert messages[-3]["content"] == "准备执行"
+    assert [call["id"] for call in messages[-3]["tool_calls"]] == ["first", "second"]
+    assert [message["tool_call_id"] for message in messages[-2:]] == ["first", "second"]
+    assert agent.history.get_pending_calls() == {}
+
+
+async def test_run_waits_for_stream_exhaustion_before_committing_or_executing(
+    registry: ToolRegistry, handler: Mock
+) -> None:
+    at_tail = asyncio.Event()
+    release = asyncio.Event()
+
+    class TailLLM(FakeLLM):
+        async def stream_turn(
+            self, messages: list[dict[str, Any]], **kwargs: Any
+        ) -> AsyncIterator[ModelResponseStream]:
+            if not self.requests:
+                self.requests.append(deepcopy({"messages": messages, **kwargs}))
+                yield stream_chunk(
+                    "尚未耗尽",
+                    calls=[{"index": 0, **tool_call()}],
+                    finish_reason="tool_calls",
+                )
+                at_tail.set()
+                await release.wait()
+                yield ModelResponseStream(choices=[])
+            else:
+                async for chunk in super().stream_turn(messages, **kwargs):
+                    yield chunk
+
+    client = TailLLM([final_response("完成")])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    task = asyncio.create_task(agent.run("调用工具"))
+    try:
+        await asyncio.wait_for(at_tail.wait(), timeout=5)
+        assert [item["role"] for item in agent.history.get_model_messages()] == ["system", "user"]
+        handler.assert_not_called()
+        assert not task.done()
+        release.set()
+        assert await asyncio.wait_for(task, timeout=5) == "完成"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    handler.assert_called_once_with(text="你好", repeat=1)
+    assert len(client.requests) == 2
+    assert agent.history.get_pending_calls() == {}
+
+
+@pytest.mark.parametrize("after_finish", [False, True], ids=["partial", "after-finish"])
+@pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError, asyncio.CancelledError])
+async def test_run_discards_failed_stream_and_preserves_prior_observations(
+    registry: ToolRegistry,
+    handler: Mock,
+    after_finish: bool,
+    error_type: type[BaseException],
+) -> None:
+    error = error_type("流已中断")
+    client = FakeLLM(
+        [
+            tool_response([tool_call("committed", arguments='{"text":"已取得的观察"}')]),
+            [
+                stream_chunk(
+                    "临时正文不得进入历史",
+                    calls=[{"index": 0, **tool_call("uncommitted")}],
+                    finish_reason="tool_calls" if after_finish else None,
+                ),
+                error,
+            ],
+            final_response("继续成功"),
+        ]
+    )
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+
+    with pytest.raises(error_type) as caught:
+        await agent.run("执行任务")
+
+    assert caught.value is error
+    history = agent.history.get_model_messages()
+    assert [item["role"] for item in history] == ["system", "user", "assistant", "tool"]
+    assert history[-1]["tool_call_id"] == "committed"
+    assert ToolResult.model_validate_json(history[-1]["content"]).output == "已取得的观察"
+    assert agent.history.get_pending_calls() == {}
+    handler.assert_called_once_with(text="已取得的观察", repeat=1)
+
+    assert await agent.run("继续") == "继续成功"
+    assert client.requests[2]["messages"] == [*history, {"role": "user", "content": "继续"}]
+    handler.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("chunks", "error_match"),
+    [
+        ([stream_chunk("缺少结束片")], "缺少结束原因"),
+        ([stream_chunk("没有调用", finish_reason="tool_calls")], "没有返回调用信息"),
+        (
+            [
+                stream_chunk(
+                    calls=[
+                        {
+                            "index": 0,
+                            "type": "function",
+                            "function": {"name": "echo", "arguments": "{}"},
+                        }
+                    ],
+                    finish_reason="tool_calls",
+                )
+            ],
+            "ID",
+        ),
+        (
+            [
+                stream_chunk(
+                    calls=[
+                        {
+                            "index": 0,
+                            "id": "missing-name",
+                            "type": "function",
+                            "function": {"arguments": "{}"},
+                        }
+                    ],
+                    finish_reason="tool_calls",
+                )
+            ],
+            "名称",
+        ),
+    ],
+    ids=["missing-finish", "missing-calls", "missing-id", "missing-name"],
+)
+async def test_run_rejects_protocol_failure_without_commit_or_execution(
+    registry: ToolRegistry,
+    handler: Mock,
+    chunks: list[ModelResponseStream],
+    error_match: str,
+) -> None:
+    client = FakeLLM([chunks, final_response("恢复成功")])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+
+    with pytest.raises(RuntimeError, match=error_match):
+        await agent.run("执行任务")
+
+    history = agent.history.get_model_messages()
+    assert [item["role"] for item in history] == ["system", "user"]
+    assert agent.history.get_pending_calls() == {}
+    handler.assert_not_called()
+    assert await agent.run("继续") == "恢复成功"
+    assert client.requests[1]["messages"] == [*history, {"role": "user", "content": "继续"}]
+
+
+async def test_run_cancels_inflight_stream_without_committing_or_executing(
+    registry: ToolRegistry, handler: Mock
+) -> None:
+    waiting = asyncio.Event()
+    blocked = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class BlockingLLM(FakeLLM):
+        async def stream_turn(
+            self, messages: list[dict[str, Any]], **kwargs: Any
+        ) -> AsyncIterator[ModelResponseStream]:
+            if not self.requests:
+                self.requests.append(deepcopy({"messages": messages, **kwargs}))
+                try:
+                    yield stream_chunk("临时文字", calls=[{"index": 0, **tool_call()}])
+                    waiting.set()
+                    await blocked.wait()
+                finally:
+                    cancelled.set()
+            else:
+                async for chunk in super().stream_turn(messages, **kwargs):
+                    yield chunk
+
+    client = BlockingLLM([final_response("取消后继续")])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    task = asyncio.create_task(agent.run("调用工具"))
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert cancelled.is_set()
+    history = agent.history.get_model_messages()
+    assert [item["role"] for item in history] == ["system", "user"]
+    assert agent.history.get_pending_calls() == {}
+    handler.assert_not_called()
+    assert await agent.run("继续") == "取消后继续"
+    assert client.requests[1]["messages"] == [*history, {"role": "user", "content": "继续"}]

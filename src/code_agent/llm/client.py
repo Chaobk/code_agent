@@ -1,19 +1,19 @@
 """模型层(A):用 litellm 统一调用各家模型。
 
 将 Settings 翻译为 Chat Completions 请求参数，原样返回完整响应或流式 chunk。
-文本提取、工具参数组装与工具执行由调用方负责；M6 再接入用量与成本统计。
+文本与工具参数分片由 llm.streaming 组装，历史提交与工具执行由 core 编排；
+M6 再接入用量与成本统计。
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import litellm
 from litellm.types.utils import ModelResponse, ModelResponseStream
 
-from code_agent.config import Settings, load_settings
+from code_agent.config import Settings
 
 
 class LLMClient:
@@ -69,26 +69,3 @@ class LLMClient:
         )
         async for chunk in stream:
             yield chunk
-
-
-if __name__ == "__main__":
-    # async def _demo() -> None:
-    #     client = LLMClient(load_settings())
-    #     messages = [{"role": "user", "content": "你好"}]
-    #     async for chunk in client.stream_turn(messages):
-    #         if not chunk.choices:
-    #             continue
-    #         text = chunk.choices[0].delta.content
-    #         if text:
-    #             print(text, end="", flush=True)
-    #     print()
-    #
-    # asyncio.run(_demo())
-
-    async def _demo2() -> None:
-        client = LLMClient(load_settings())
-        messages = [{"role": "user", "content": "你好"}]
-        res = await client.complete_turn(messages)
-        print(res)
-
-    asyncio.run(_demo2())

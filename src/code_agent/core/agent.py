@@ -19,6 +19,7 @@ from code_agent.config import Settings
 from code_agent.context.history import ConversationHistory
 from code_agent.events import Role, ToolExecutionCancelled, ToolResult, ToolStatus
 from code_agent.llm.client import LLMClient
+from code_agent.llm.streaming import TurnAssembler
 from code_agent.tools.builtin import create_builtin_registry
 from code_agent.tools.registry import ToolRegistry
 
@@ -69,7 +70,7 @@ class Agent:
         self.history = ConversationHistory()
         self.history.add_message({"role": "system", "content": system_prompt})
 
-    async def run(self, prompt: str) -> str:
+    async def run_back(self, prompt: str) -> str:
         self.history.add_message({"role": "user", "content": prompt})
         for _ in range(self.max_steps):
             response = await self.client.complete_turn(
@@ -125,6 +126,60 @@ class Agent:
                 return message.content or ""
 
         raise RuntimeError(f"达到最大请求轮数：{self.max_steps}")
+
+    async def run(self, prompt: str) -> str:
+        self.history.add_message({"role": "user", "content": prompt})
+        for _ in range(self.max_steps):
+            assembler = TurnAssembler()
+
+            async for chunk in self.client.stream_turn(
+                self.history.get_model_messages(), tools=self.tools
+            ):
+                assembler.push(chunk)
+
+            assembled_turn = assembler.finish()
+
+            self.history.add_message(assembled_turn.message)
+
+            tool_calls = assembled_turn.message.get("tool_calls") or []
+            for tool_call in tool_calls:
+                try:
+                    output = await self.registry.execute(
+                        tool_call["function"]["name"],
+                        tool_call["function"]["arguments"],
+                    )
+                except asyncio.CancelledError as exc:
+                    for pending_id in self.history.get_pending_calls():
+                        is_current = pending_id == tool_call["id"]
+
+                        if is_current and isinstance(exc, ToolExecutionCancelled):
+                            observation = exc.observation
+                        else:
+                            observation = ToolResult(
+                                status=ToolStatus.ERROR,
+                                output={
+                                    "reason": "interrupted",
+                                    "execution": ("unknown" if is_current else "not_started"),
+                                    "error": (
+                                        "调用被中断，未取得可确认的执行结果"
+                                        if is_current
+                                        else "本轮已中断，此调用尚未启动"
+                                    ),
+                                },
+                            )
+                        self._append_tool_result(pending_id, observation)
+                    raise
+                self._append_tool_result(tool_call["id"], output)
+
+            if tool_calls:
+                continue
+
+            if assembled_turn.finish_reason == "tool_calls":
+                raise RuntimeError("模型工具调用，但没有返回调用信息")
+
+            if assembled_turn.finish_reason == "stop" and tool_calls == []:
+                return assembled_turn.message["content"] or ""
+        raise RuntimeError(f"达到最大请求轮数: {self.max_steps}")
 
     def _append_tool_result(self, call_id: str, result: ToolResult) -> None:
         self.history.add_message(

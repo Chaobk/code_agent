@@ -1,12 +1,13 @@
 """命令行入口的单测(H)。"""
 
+from collections.abc import AsyncIterator
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from litellm.types.utils import ModelResponse
+from litellm.types.utils import ModelResponseStream
 from typer.testing import CliRunner
 
 from code_agent import __version__
@@ -20,26 +21,39 @@ from code_agent.ui.cli import app
 runner = CliRunner()
 
 
-def bash_response() -> ModelResponse:
-    """模拟一次完整的 Bash 工具调用响应。"""
-    return ModelResponse(
+async def bash_response() -> AsyncIterator[ModelResponseStream]:
+    """模拟分两片到达的 Bash 参数，CLI 使用真实组装器与循环。"""
+    yield ModelResponseStream(
         choices=[
             {
-                "finish_reason": "tool_calls",
-                "message": {
+                "delta": {
                     "role": "assistant",
-                    "content": None,
                     "tool_calls": [
                         {
+                            "index": 0,
                             "id": "call_cli_1",
                             "type": "function",
-                            "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+                            "function": {"name": "bash", "arguments": '{"command":'},
                         }
                     ],
                 },
             }
         ]
     )
+    yield ModelResponseStream(
+        choices=[
+            {
+                "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"pwd"}'}}]},
+                "finish_reason": "tool_calls",
+            }
+        ]
+    )
+
+
+async def text_response(content: str) -> AsyncIterator[ModelResponseStream]:
+    """正文分片后以原生 stop 结束。"""
+    yield ModelResponseStream(choices=[{"delta": {"content": content}}])
+    yield ModelResponseStream(choices=[{"delta": {}, "finish_reason": "stop"}])
 
 
 @pytest.fixture(autouse=True)
@@ -89,19 +103,12 @@ def test_prompt_runs_bash_through_agent_and_displays_history(
     responses = iter(
         [
             bash_response(),
-            ModelResponse(
-                choices=[
-                    {
-                        "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": "检查完成[bold]"},
-                    }
-                ]
-            ),
+            text_response("检查完成[bold]"),
         ]
     )
     requests: list[dict[str, Any]] = []
 
-    async def complete(**kwargs: Any) -> ModelResponse:
+    async def complete(**kwargs: Any) -> AsyncIterator[ModelResponseStream]:
         requests.append(deepcopy(kwargs))
         return next(responses)
 
@@ -112,7 +119,7 @@ def test_prompt_runs_bash_through_agent_and_displays_history(
 
     assert result.exit_code == 0, result.stdout
     assert request.await_count == 2
-    assert all(item["stream"] is False for item in requests)
+    assert all(item["stream"] is True for item in requests)
     assert [tool["function"]["name"] for tool in requests[0]["tools"]] == ["bash"]
     assert requests[0]["messages"][-1] == {"role": "user", "content": "检查当前目录"}
     assert requests[1]["messages"][-1] == {
@@ -139,14 +146,7 @@ def test_prompt_runs_bash_through_agent_and_displays_history(
 def test_prompt_displays_final_answer_without_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None, DEEPSEEK_API_KEY="test-key")
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
-    response = ModelResponse(
-        choices=[
-            {
-                "finish_reason": "stop",
-                "message": {"role": "assistant", "content": "你好[bold]"},
-            }
-        ]
-    )
+    response = text_response("你好[bold]")
     request = AsyncMock(return_value=response)
     monkeypatch.setattr(client_module.litellm, "acompletion", request)
 
@@ -157,21 +157,14 @@ def test_prompt_displays_final_answer_without_tools(monkeypatch: pytest.MonkeyPa
     assert "END_TASK" not in result.stdout
     assert "命令解释器：Bash" not in result.stdout
     request.assert_awaited_once()
-    assert request.await_args.kwargs["stream"] is False
+    assert request.await_args.kwargs["stream"] is True
     assert [tool["function"]["name"] for tool in request.await_args.kwargs["tools"]] == ["bash"]
 
 
 def test_prompt_preserves_old_marker_as_literal_final_text(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None, DEEPSEEK_API_KEY="test-key")
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
-    response = ModelResponse(
-        choices=[
-            {
-                "finish_reason": "stop",
-                "message": {"role": "assistant", "content": "示例[bold]\nEND_TASK"},
-            }
-        ]
-    )
+    response = text_response("示例[bold]\nEND_TASK")
     request = AsyncMock(return_value=response)
     monkeypatch.setattr(client_module.litellm, "acompletion", request)
 
@@ -218,7 +211,7 @@ def test_prompt_preserves_tool_history_when_run_fails(
     assert "pwd" in result.stdout
     assert "completed" in result.stdout
     assert "调用失败" in result.stdout
-    error = "达到最大请求轮数：1" if max_steps == 1 else "连接中断[bold]"
+    error = "达到最大请求轮数: 1" if max_steps == 1 else "连接中断[bold]"
     assert error in result.stdout
     assert result.stdout.index("已获得的工具观察") < result.stdout.index("调用失败")
     assert request.await_count == max_steps
