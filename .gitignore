@@ -85,6 +85,7 @@ ENV/
 .coverage.*
 htmlcov/
 .pytest_cache/
+/pytest-cache-files-*/
 .hypothesis/
 .mypy_cache/
 .dmypy.json
