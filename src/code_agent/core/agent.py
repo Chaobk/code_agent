@@ -70,63 +70,6 @@ class Agent:
         self.history = ConversationHistory()
         self.history.add_message({"role": "system", "content": system_prompt})
 
-    async def run_back(self, prompt: str) -> str:
-        self.history.add_message({"role": "user", "content": prompt})
-        for _ in range(self.max_steps):
-            response = await self.client.complete_turn(
-                self.history.get_model_messages(), tools=self.tools
-            )
-            choice = response.choices[0]
-
-            if choice.finish_reason not in ("stop", "tool_calls"):
-                raise RuntimeError(f"模型未正常结束：{choice.finish_reason}")
-
-            message = choice.message
-
-            self.history.add_message(message.model_dump())
-
-            if message.tool_calls:
-                for call in message.tool_calls:
-                    try:
-                        output = await self.registry.execute(
-                            call.function.name, call.function.arguments
-                        )
-                    except asyncio.CancelledError as exc:
-                        for pending_id in self.history.get_pending_calls():
-                            is_current = pending_id == call.id
-
-                            if is_current and isinstance(exc, ToolExecutionCancelled):
-                                observation = exc.observation
-                            else:
-                                observation = ToolResult(
-                                    status=ToolStatus.ERROR,
-                                    output={
-                                        "reason": "interrupted",
-                                        "execution": ("unknown" if is_current else "not_started"),
-                                        "error": (
-                                            "调用被中断，未取得可确认的执行结果"
-                                            if is_current
-                                            else "本轮已中断，此调用尚未启动"
-                                        ),
-                                    },
-                                )
-                            self._append_tool_result(pending_id, observation)
-                        raise
-                    self._append_tool_result(call.id, output)
-                # 有工具调用的话，不能直接结束，需要模型判断工具的执行结果
-                continue
-
-            if choice.finish_reason == "tool_calls":
-                raise RuntimeError("模型报告工具调用，但没有返回调用信息")
-
-            # 如果没有工具嗲用并且finish_reason==“stop”，就可以认定为当前任务结束
-            if choice.finish_reason == "stop" and (
-                message.tool_calls is None or message.tool_calls == []
-            ):
-                return message.content or ""
-
-        raise RuntimeError(f"达到最大请求轮数：{self.max_steps}")
-
     async def run(self, prompt: str) -> str:
         self.history.add_message({"role": "user", "content": prompt})
         for _ in range(self.max_steps):
