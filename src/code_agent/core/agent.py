@@ -13,11 +13,13 @@ M2a 将当前演示入口的终端渲染依赖移出核心业务模块。
 """
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 
 from code_agent.config import Settings
 from code_agent.context.history import ConversationHistory
-from code_agent.events import Role, ToolExecutionCancelled, ToolResult, ToolStatus
+from code_agent.events import Role, ToolExecutionCancelled, ToolResult, ToolStatus, AnyEvent, TextDelta, ToolCall, \
+    ToolCallEvent
 from code_agent.llm.client import LLMClient
 from code_agent.llm.streaming import TurnAssembler
 from code_agent.tools.builtin import create_builtin_registry
@@ -70,7 +72,7 @@ class Agent:
         self.history = ConversationHistory()
         self.history.add_message({"role": "system", "content": system_prompt})
 
-    async def run(self, prompt: str) -> str:
+    async def run(self, prompt: str, *, on_event: Callable[[AnyEvent], None] | None = None) -> str:
         self.history.add_message({"role": "user", "content": prompt})
         for _ in range(self.max_steps):
             assembler = TurnAssembler()
@@ -78,7 +80,9 @@ class Agent:
             async for chunk in self.client.stream_turn(
                 self.history.get_model_messages(), tools=self.tools
             ):
-                assembler.push(chunk)
+                text = assembler.push(chunk)
+                if text is not None and on_event is not None:
+                    on_event(TextDelta(text=text))
 
             assembled_turn = assembler.finish()
 
@@ -87,6 +91,15 @@ class Agent:
             tool_calls = assembled_turn.message.get("tool_calls") or []
             for tool_call in tool_calls:
                 try:
+
+                    call = ToolCall(
+                        id=tool_call["id"],
+                        name=tool_call["function"]["name"],
+                        arguments=tool_call["function"]["arguments"],
+                    )
+                    if on_event is not None:
+                        on_event(ToolCallEvent(tool_call=call))
+
                     output = await self.registry.execute(
                         tool_call["function"]["name"],
                         tool_call["function"]["arguments"],

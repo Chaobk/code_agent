@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.syntax import Syntax
 from rich.text import Text
 
-from code_agent.events import ToolResult
+from code_agent.events import ToolResult, AnyEvent, TextDelta, ToolCallEvent
 
 ROLE_LABELS = {
     "system": "系统",
@@ -108,3 +108,25 @@ def _print_value(value: Any, console: Console) -> None:
         console.print(Text(value if value else "（空）"))
     else:
         console.print(Syntax(json.dumps(value, ensure_ascii=False, indent=2), "json"))
+
+
+def render_event(
+    event: AnyEvent,
+    *,
+    console: Console | None = None
+) -> None:
+    """将运行事件显示到中断"""
+    console = console if console is not None else Console()
+
+    if isinstance(event, TextDelta):
+        console.print(
+            Text(event.text),
+            end="",
+            soft_wrap=True,
+        )
+    elif isinstance(event, ToolCallEvent):
+        console.print()
+        call=event.tool_call
+        console.print(Text(f"工具调用：{call.name} | ID: {call.id}"))
+        console.print(Text(call.arguments))
+    pass
