@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.syntax import Syntax
 from rich.text import Text
 
-from code_agent.events import ToolResult, AnyEvent, TextDelta, ToolCallEvent
+from code_agent.events import ToolResult, AnyEvent, TextDelta, ToolCallEvent, ToolResultEvent
 
 ROLE_LABELS = {
     "system": "系统",
@@ -129,4 +129,16 @@ def render_event(
         call=event.tool_call
         console.print(Text(f"工具调用：{call.name} | ID: {call.id}"))
         console.print(Text(call.arguments))
+    elif isinstance(event, ToolResultEvent):
+        console.print()
+        res = event.tool_result
+        console.print(Text(f"工具执行结果 | Id: {event.tool_call_id}"))
+        console.print(
+            Text(
+                f"状态： {res.status.value} | "
+                f"截断： {'是' if res.truncated else '否'}"
+            )
+        )
+        _print_value(res.output, console)
+
     pass

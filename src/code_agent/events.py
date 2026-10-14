@@ -121,6 +121,11 @@ class ToolCallEvent(AgentEvent):
     type: Literal[EventType.TOOL_CALL] = EventType.TOOL_CALL
     tool_call: ToolCall
 
+class ToolResultEvent(AgentEvent):
+    type: Literal[EventType.TOOL_RESULT] = EventType.TOOL_RESULT
+    tool_result: ToolResult
+    tool_call_id: str
+
 
 class StepStarted(AgentEvent):
     """一步(一次模型往返)开始。"""
@@ -166,4 +171,5 @@ AnyEvent = (
     | StepFinished
     | RunFinished
     | ErrorEvent
+    | ToolResultEvent
 )

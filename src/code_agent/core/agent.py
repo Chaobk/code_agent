@@ -18,8 +18,17 @@ from pathlib import Path
 
 from code_agent.config import Settings
 from code_agent.context.history import ConversationHistory
-from code_agent.events import Role, ToolExecutionCancelled, ToolResult, ToolStatus, AnyEvent, TextDelta, ToolCall, \
-    ToolCallEvent
+from code_agent.events import (
+    AnyEvent,
+    Role,
+    TextDelta,
+    ToolCall,
+    ToolCallEvent,
+    ToolExecutionCancelled,
+    ToolResult,
+    ToolResultEvent,
+    ToolStatus,
+)
 from code_agent.llm.client import LLMClient
 from code_agent.llm.streaming import TurnAssembler
 from code_agent.tools.builtin import create_builtin_registry
@@ -91,7 +100,6 @@ class Agent:
             tool_calls = assembled_turn.message.get("tool_calls") or []
             for tool_call in tool_calls:
                 try:
-
                     call = ToolCall(
                         id=tool_call["id"],
                         name=tool_call["function"]["name"],
@@ -100,7 +108,7 @@ class Agent:
                     if on_event is not None:
                         on_event(ToolCallEvent(tool_call=call))
 
-                    output = await self.registry.execute(
+                    tool_result = await self.registry.execute(
                         tool_call["function"]["name"],
                         tool_call["function"]["arguments"],
                     )
@@ -124,8 +132,17 @@ class Agent:
                                 },
                             )
                         self._append_tool_result(pending_id, observation)
+                        if on_event is not None:
+                            on_event(
+                                ToolResultEvent(
+                                    tool_result=observation,
+                                    tool_call_id=pending_id,
+                                )
+                            )
                     raise
-                self._append_tool_result(tool_call["id"], output)
+                self._append_tool_result(tool_call["id"], tool_result)
+                if on_event is not None:
+                    on_event(ToolResultEvent(tool_result=tool_result, tool_call_id=tool_call["id"]))
 
             if tool_calls:
                 continue
