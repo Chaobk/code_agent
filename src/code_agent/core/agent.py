@@ -20,7 +20,9 @@ from code_agent.config import Settings
 from code_agent.context.history import ConversationHistory
 from code_agent.events import (
     AnyEvent,
+    ErrorEvent,
     Role,
+    RunFinished,
     TextDelta,
     ToolCall,
     ToolCallEvent,
@@ -82,20 +84,33 @@ class Agent:
         self.history.add_message({"role": "system", "content": system_prompt})
 
     async def run(self, prompt: str, *, on_event: Callable[[AnyEvent], None] | None = None) -> str:
+        def emit(event: AnyEvent) -> None:
+            if on_event is not None:
+                on_event(event)
+
         self.history.add_message({"role": "user", "content": prompt})
         for _ in range(self.max_steps):
             assembler = TurnAssembler()
 
-            async for chunk in self.client.stream_turn(
-                self.history.get_model_messages(), tools=self.tools
-            ):
-                text = assembler.push(chunk)
-                if text is not None and on_event is not None:
-                    on_event(TextDelta(text=text))
+            try:
+                async for chunk in self.client.stream_turn(
+                    self.history.get_model_messages(), tools=self.tools
+                ):
+                    text = assembler.push(chunk)
+                    if text is not None:
+                        emit(TextDelta(text=text))
 
-            assembled_turn = assembler.finish()
+                assembled_turn = assembler.finish()
 
-            self.history.add_message(assembled_turn.message)
+                self.history.add_message(assembled_turn.message)
+            except asyncio.CancelledError:
+                # 由于取消导致的结束
+                emit(RunFinished(reason="cancelled"))
+                raise
+            except Exception as exc:
+                emit(ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+                emit(RunFinished(reason="error"))
+                raise
 
             tool_calls = assembled_turn.message.get("tool_calls") or []
             for tool_call in tool_calls:
@@ -105,8 +120,7 @@ class Agent:
                         name=tool_call["function"]["name"],
                         arguments=tool_call["function"]["arguments"],
                     )
-                    if on_event is not None:
-                        on_event(ToolCallEvent(tool_call=call))
+                    emit(ToolCallEvent(tool_call=call))
 
                     tool_result = await self.registry.execute(
                         tool_call["function"]["name"],
@@ -132,17 +146,16 @@ class Agent:
                                 },
                             )
                         self._append_tool_result(pending_id, observation)
-                        if on_event is not None:
-                            on_event(
-                                ToolResultEvent(
-                                    tool_result=observation,
-                                    tool_call_id=pending_id,
-                                )
+                        emit(
+                            ToolResultEvent(
+                                tool_result=observation,
+                                tool_call_id=pending_id,
                             )
+                        )
+                    emit(RunFinished(reason="cancelled"))
                     raise
                 self._append_tool_result(tool_call["id"], tool_result)
-                if on_event is not None:
-                    on_event(ToolResultEvent(tool_result=tool_result, tool_call_id=tool_call["id"]))
+                emit(ToolResultEvent(tool_result=tool_result, tool_call_id=tool_call["id"]))
 
             if tool_calls:
                 continue
@@ -151,7 +164,13 @@ class Agent:
                 raise RuntimeError("模型工具调用，但没有返回调用信息")
 
             if assembled_turn.finish_reason == "stop" and tool_calls == []:
+                # 正常结束，补充信号
+                emit(RunFinished(reason="completed"))
                 return assembled_turn.message["content"] or ""
+
+        # 轮数耗尽，先发信号
+        emit(ErrorEvent(message=f"达到最大请求轮数：{self.max_steps}"))
+        emit(RunFinished(reason="max_steps"))
         raise RuntimeError(f"达到最大请求轮数: {self.max_steps}")
 
     def _append_tool_result(self, call_id: str, result: ToolResult) -> None:
@@ -164,7 +183,7 @@ def create_agent(settings: Settings) -> Agent:
     """根据应用配置创建单次任务使用的 Agent(M1)。
 
     在核心中构造 LLMClient,将 max_steps、workspace_dir、bash_path 绑定到 Agent。
-    CLI 调用此入口后 await agent.run(prompt),再由 ui.render 显示消息历史。
+    CLI 调用此入口后 await agent.run(prompt),由事件回调实时显示运行过程。
     """
     return Agent(
         LLMClient(settings),

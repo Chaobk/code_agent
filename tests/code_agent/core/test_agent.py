@@ -16,7 +16,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from code_agent.config import Settings
 from code_agent.core.agent import Agent
-from code_agent.events import ToolExecutionCancelled, ToolResult, ToolStatus
+from code_agent.events import (
+    AnyEvent,
+    ErrorEvent,
+    RunFinished,
+    TextDelta,
+    ToolCallEvent,
+    ToolExecutionCancelled,
+    ToolResult,
+    ToolResultEvent,
+    ToolStatus,
+)
 from code_agent.llm import client as client_module
 from code_agent.tools import builtin as builtin_module
 from code_agent.tools.builtin import shell as shell_module
@@ -109,6 +119,30 @@ def tool_response(
             }
         ]
     )
+
+
+def _assert_tool_result_is_committed(agent: Agent, event: ToolResultEvent) -> None:
+    """在回调现场核实结果已经写入历史，并解除该调用的 pending 状态。"""
+    message = agent.history.get_messages()[-1]
+    assert message["role"] == "tool"
+    assert message["tool_call_id"] == event.tool_call_id
+    assert ToolResult.model_validate_json(message["content"]) == event.tool_result
+    assert event.tool_call_id not in agent.history.get_pending_calls()
+
+
+def _assert_run_finished(events: list[AnyEvent], reason: str) -> None:
+    """每次运行只结束一次，错误详情先于最后的结束事件。"""
+    finished = [event for event in events if isinstance(event, RunFinished)]
+    assert len(finished) == 1
+    assert events[-1] is finished[0]
+    assert finished[0].reason == reason
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+    if reason in {"error", "max_steps"}:
+        assert len(errors) == 1
+        assert events[-2] is errors[0]
+        assert errors[0].message
+    else:
+        assert errors == []
 
 
 @pytest.fixture(autouse=True)
@@ -546,10 +580,16 @@ async def test_run_stops_at_max_steps(registry: ToolRegistry, handler: Mock) -> 
         + [final_response("不应请求这一轮")]
     )
     agent = Agent(client, registry, max_steps=3, workspace_dir=Path.cwd())
+    events: list[AnyEvent] = []
 
     with pytest.raises(RuntimeError) as caught:
-        await agent.run("重复调用工具")
+        await agent.run("重复调用工具", on_event=events.append)
 
+    _assert_run_finished(events, "max_steps")
+    assert isinstance(events[-3], ToolResultEvent)
+    assert isinstance(events[-2], ErrorEvent)
+    assert "达到最大请求轮数" in events[-2].message
+    assert "3" in events[-2].message
     assert "3" in str(caught.value)
     assert len(client.requests) == 3
     assert handler.call_count == 3
@@ -570,10 +610,12 @@ async def test_run_rejects_abnormal_response_without_executing_tool(
     response.choices[0].message.content = "任务完成"
     client = FakeLLM([response])
     agent = Agent(client, registry, workspace_dir=Path.cwd())
+    events: list[AnyEvent] = []
 
     with pytest.raises(RuntimeError, match=finish_reason):
-        await agent.run("调用工具")
+        await agent.run("调用工具", on_event=events.append)
 
+    _assert_run_finished(events, "error")
     assert len(client.requests) == 1
     assert [message["role"] for message in agent.history.get_model_messages()] == ["system", "user"]
     handler.assert_not_called()
@@ -602,10 +644,16 @@ async def test_run_rejects_tool_finish_without_calls(
 async def test_run_propagates_model_request_error(registry: ToolRegistry, handler: Mock) -> None:
     error = RuntimeError("模型请求失败")
     client = FakeLLM([error])
+    events: list[AnyEvent] = []
 
     with pytest.raises(RuntimeError, match="模型请求失败") as caught:
-        await Agent(client, registry, workspace_dir=Path.cwd()).run("回答问题")
+        await Agent(client, registry, workspace_dir=Path.cwd()).run(
+            "回答问题", on_event=events.append
+        )
 
+    _assert_run_finished(events, "error")
+    assert isinstance(events[-2], ErrorEvent)
+    assert events[-2].message == "RuntimeError: 模型请求失败"
     assert caught.value is error
     assert len(client.requests) == 1
     handler.assert_not_called()
@@ -634,6 +682,139 @@ async def test_run_propagates_tool_cancellation(registry: ToolRegistry, handler:
     assert observation.output["execution"] == "unknown"
 
 
+async def test_run_emits_tool_results_after_commit_in_execution_order() -> None:
+    observations = [
+        ToolResult(
+            output={"stdout": "测试失败[bold]\n", "stderr": "", "exit_code": 1},
+            status=ToolStatus.COMPLETED,
+            truncated=True,
+        ),
+        ToolResult(
+            output={"stdout": "部分输出", "stderr": "", "exit_code": None},
+            status=ToolStatus.TIMED_OUT,
+        ),
+    ]
+    events: list[ToolCallEvent | ToolResultEvent] = []
+    executed: list[str] = []
+
+    async def execute(text: str, repeat: int = 1) -> ToolResult:
+        # 调用事件必须先于 handler；上一个结果必须在下一个调用启动前送达。
+        index = len(executed)
+        assert len(events) == index * 2 + 1
+        assert isinstance(events[-1], ToolCallEvent)
+        assert events[-1].tool_call.id == f"call_{index}"
+        executed.append(text)
+        return observations[index]
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec("echo", "Return text", EchoArgs, execute))
+    calls = [
+        tool_call(f"call_{index}", arguments=json.dumps({"text": text}))
+        for index, text in enumerate(["first", "second"])
+    ]
+    client = FakeLLM([tool_response(calls), final_response("已处理观察")])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+
+    def on_event(event: AnyEvent) -> None:
+        if isinstance(event, ToolCallEvent):
+            assert event.tool_call.id in agent.history.get_pending_calls()
+            assert event.tool_call.model_dump() == {
+                "id": calls[len(executed)]["id"],
+                **calls[len(executed)]["function"],
+            }
+            events.append(event)
+        elif isinstance(event, ToolResultEvent):
+            _assert_tool_result_is_committed(agent, event)
+            assert len(client.requests) == 1
+            events.append(event)
+
+    assert await agent.run("执行两个工具", on_event=on_event) == "已处理观察"
+
+    assert executed == ["first", "second"]
+    assert [type(event) for event in events] == [
+        ToolCallEvent,
+        ToolResultEvent,
+        ToolCallEvent,
+        ToolResultEvent,
+    ]
+    results = [event for event in events if isinstance(event, ToolResultEvent)]
+    assert [event.tool_call_id for event in results] == ["call_0", "call_1"]
+    assert [event.tool_result for event in results] == observations
+    assert [
+        ToolResult.model_validate_json(message["content"])
+        for message in client.requests[1]["messages"]
+        if message["role"] == "tool"
+    ] == observations
+
+
+@pytest.mark.parametrize("content", ["最终答案[bold]\n", "", None], ids=["text", "empty", "null"])
+async def test_run_emits_completed_after_final_text(
+    registry: ToolRegistry, handler: Mock, content: str | None
+) -> None:
+    client = FakeLLM([final_response(content)])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    events: list[AnyEvent] = []
+
+    assert await agent.run("回答问题", on_event=events.append) == (content or "")
+
+    _assert_run_finished(events, "completed")
+    assert "".join(event.text for event in events if isinstance(event, TextDelta)) == (
+        content or ""
+    )
+    assert not any(isinstance(event, (ToolCallEvent, ToolResultEvent)) for event in events)
+    handler.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "handler_fails", "error_match"),
+    [
+        ("echo", '{"text":', False, "工具参数错误"),
+        ("echo", '{"text":"你好","repeat":0}', False, "工具参数错误"),
+        ("missing", '{"text":"你好"}', False, "未注册的工具"),
+        ("echo", '{"text":"你好"}', True, "工具执行错误"),
+    ],
+    ids=["invalid-json", "invalid-arguments", "unknown-tool", "handler-error"],
+)
+async def test_run_emits_paired_error_observation_and_continues(
+    registry: ToolRegistry,
+    handler: Mock,
+    name: str,
+    arguments: str,
+    handler_fails: bool,
+    error_match: str,
+) -> None:
+    handler.side_effect = RuntimeError("执行失败[bold]")
+    client = FakeLLM(
+        [tool_response([tool_call("failed", name, arguments)]), final_response("已根据错误收尾")]
+    )
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    results: list[ToolResultEvent] = []
+    events: list[AnyEvent] = []
+
+    def on_event(event: AnyEvent) -> None:
+        events.append(event)
+        if isinstance(event, ToolResultEvent):
+            _assert_tool_result_is_committed(agent, event)
+            results.append(event)
+
+    assert await agent.run("调用工具", on_event=on_event) == "已根据错误收尾"
+
+    _assert_run_finished(events, "completed")
+    assert len(results) == 1
+    assert results[0].tool_call_id == "failed"
+    observation = results[0].tool_result
+    assert observation.status == ToolStatus.ERROR
+    assert isinstance(observation.output, dict)
+    assert error_match in observation.output["error"]
+    assert ToolResult.model_validate_json(client.requests[1]["messages"][-1]["content"]) == (
+        observation
+    )
+    if handler_fails:
+        handler.assert_called_once_with(text="你好", repeat=1)
+    else:
+        handler.assert_not_called()
+
+
 @pytest.mark.parametrize("cancel_index", [0, 1, 2], ids=["first", "middle", "last"])
 async def test_run_pairs_cancelled_batch_and_can_resume(cancel_index: int) -> None:
     started = asyncio.Event()
@@ -656,7 +837,14 @@ async def test_run_pairs_cancelled_batch_and_can_resume(cancel_index: int) -> No
     ]
     client = FakeLLM([tool_response(calls), final_response("resumed")])
     agent = Agent(client, registry, workspace_dir=Path.cwd())
-    task = asyncio.create_task(agent.run("execute batch"))
+    events: list[AnyEvent] = []
+
+    def on_event(event: AnyEvent) -> None:
+        if isinstance(event, ToolResultEvent):
+            _assert_tool_result_is_committed(agent, event)
+        events.append(event)
+
+    task = asyncio.create_task(agent.run("execute batch", on_event=on_event))
 
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
@@ -668,11 +856,27 @@ async def test_run_pairs_cancelled_batch_and_can_resume(cancel_index: int) -> No
         await asyncio.gather(task, return_exceptions=True)
 
     assert executed == texts[: cancel_index + 1]
+    _assert_run_finished(events, "cancelled")
     assert len(client.requests) == 1
     assert agent.history.get_pending_calls() == {}
     history = agent.history.get_model_messages()
     results = [message for message in history if message["role"] == "tool"]
     assert [message["tool_call_id"] for message in results] == [call["id"] for call in calls]
+    assert [
+        type(event) for event in events if isinstance(event, (ToolCallEvent, ToolResultEvent))
+    ] == (
+        [ToolCallEvent, ToolResultEvent] * cancel_index
+        + [ToolCallEvent]
+        + [ToolResultEvent] * (len(calls) - cancel_index)
+    )
+    assert [event.tool_call.id for event in events if isinstance(event, ToolCallEvent)] == [
+        call["id"] for call in calls[: cancel_index + 1]
+    ]
+    result_events = [event for event in events if isinstance(event, ToolResultEvent)]
+    assert [event.tool_call_id for event in result_events] == [call["id"] for call in calls]
+    assert [event.tool_result for event in result_events] == [
+        ToolResult.model_validate_json(message["content"]) for message in results
+    ]
 
     for index, message in enumerate(results):
         observation = ToolResult.model_validate_json(message["content"])
@@ -686,10 +890,15 @@ async def test_run_pairs_cancelled_batch_and_can_resume(cancel_index: int) -> No
             expected = "unknown" if index == cancel_index else "not_started"
             assert observation.output["execution"] == expected
 
-    assert await agent.run("continue") == "resumed"
+    assert await agent.run("continue", on_event=on_event) == "resumed"
     assert len(client.requests) == 2
     assert client.requests[1]["messages"] == [*history, {"role": "user", "content": "continue"}]
     assert executed == texts[: cancel_index + 1]
+    assert len([event for event in events if isinstance(event, ToolResultEvent)]) == len(calls)
+    assert [event.reason for event in events if isinstance(event, RunFinished)] == [
+        "cancelled",
+        "completed",
+    ]
 
 
 async def test_run_preserves_observation_from_cancelled_tool() -> None:
@@ -718,11 +927,20 @@ async def test_run_preserves_observation_from_cancelled_tool() -> None:
         ]
     )
     agent = Agent(client, registry, workspace_dir=Path.cwd())
+    result_events: list[ToolResultEvent] = []
+    events: list[AnyEvent] = []
+
+    def on_event(event: AnyEvent) -> None:
+        events.append(event)
+        if isinstance(event, ToolResultEvent):
+            _assert_tool_result_is_committed(agent, event)
+            result_events.append(event)
 
     with pytest.raises(ToolExecutionCancelled) as caught:
-        await agent.run("execute batch")
+        await agent.run("execute batch", on_event=on_event)
 
     assert caught.value is cancellation
+    _assert_run_finished(events, "cancelled")
     handler.assert_awaited_once_with(text="first", repeat=1)
     assert len(client.requests) == 1
     assert agent.history.get_pending_calls() == {}
@@ -736,6 +954,8 @@ async def test_run_preserves_observation_from_cancelled_tool() -> None:
     assert isinstance(remaining.output, dict)
     assert remaining.output["reason"] == "interrupted"
     assert remaining.output["execution"] == "not_started"
+    assert [event.tool_call_id for event in result_events] == ["current", "remaining"]
+    assert [event.tool_result for event in result_events] == [observation, remaining]
 
 
 async def test_run_preserves_history_between_user_turns(
@@ -923,17 +1143,28 @@ async def test_run_discards_failed_stream_and_preserves_prior_observations(
         ]
     )
     agent = Agent(client, registry, workspace_dir=Path.cwd())
+    events: list[AnyEvent] = []
 
     with pytest.raises(error_type) as caught:
-        await agent.run("执行任务")
+        await agent.run("执行任务", on_event=events.append)
 
     assert caught.value is error
+    _assert_run_finished(events, "cancelled" if error_type is asyncio.CancelledError else "error")
+    if error_type is not asyncio.CancelledError:
+        assert isinstance(events[-2], ErrorEvent)
+        assert events[-2].message == f"{error_type.__name__}: 流已中断"
     history = agent.history.get_model_messages()
     assert [item["role"] for item in history] == ["system", "user", "assistant", "tool"]
     assert history[-1]["tool_call_id"] == "committed"
     assert ToolResult.model_validate_json(history[-1]["content"]).output == "已取得的观察"
     assert agent.history.get_pending_calls() == {}
     handler.assert_called_once_with(text="已取得的观察", repeat=1)
+    assert [event.tool_call.id for event in events if isinstance(event, ToolCallEvent)] == [
+        "committed"
+    ]
+    assert [event.tool_call_id for event in events if isinstance(event, ToolResultEvent)] == [
+        "committed"
+    ]
 
     assert await agent.run("继续") == "继续成功"
     assert client.requests[2]["messages"] == [*history, {"role": "user", "content": "继续"}]
@@ -987,13 +1218,18 @@ async def test_run_rejects_protocol_failure_without_commit_or_execution(
 ) -> None:
     client = FakeLLM([chunks, final_response("恢复成功")])
     agent = Agent(client, registry, workspace_dir=Path.cwd())
+    events: list[AnyEvent] = []
 
     with pytest.raises(RuntimeError, match=error_match):
-        await agent.run("执行任务")
+        await agent.run("执行任务", on_event=events.append)
 
+    _assert_run_finished(events, "error")
+    assert isinstance(events[-2], ErrorEvent)
+    assert error_match in events[-2].message
     history = agent.history.get_model_messages()
     assert [item["role"] for item in history] == ["system", "user"]
     assert agent.history.get_pending_calls() == {}
+    assert not any(isinstance(event, (ToolCallEvent, ToolResultEvent)) for event in events)
     handler.assert_not_called()
     assert await agent.run("继续") == "恢复成功"
     assert client.requests[1]["messages"] == [*history, {"role": "user", "content": "继续"}]
@@ -1024,7 +1260,8 @@ async def test_run_cancels_inflight_stream_without_committing_or_executing(
 
     client = BlockingLLM([final_response("取消后继续")])
     agent = Agent(client, registry, workspace_dir=Path.cwd())
-    task = asyncio.create_task(agent.run("调用工具"))
+    events: list[AnyEvent] = []
+    task = asyncio.create_task(agent.run("调用工具", on_event=events.append))
     try:
         await asyncio.wait_for(waiting.wait(), timeout=5)
         task.cancel()
@@ -1035,6 +1272,8 @@ async def test_run_cancels_inflight_stream_without_committing_or_executing(
         await asyncio.gather(task, return_exceptions=True)
 
     assert cancelled.is_set()
+    _assert_run_finished(events, "cancelled")
+    assert not any(isinstance(event, (ToolCallEvent, ToolResultEvent)) for event in events)
     history = agent.history.get_model_messages()
     assert [item["role"] for item in history] == ["system", "user"]
     assert agent.history.get_pending_calls() == {}

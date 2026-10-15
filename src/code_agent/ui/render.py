@@ -15,7 +15,15 @@ from rich.console import Console
 from rich.syntax import Syntax
 from rich.text import Text
 
-from code_agent.events import ToolResult, AnyEvent, TextDelta, ToolCallEvent, ToolResultEvent
+from code_agent.events import (
+    AnyEvent,
+    ErrorEvent,
+    RunFinished,
+    TextDelta,
+    ToolCallEvent,
+    ToolResult,
+    ToolResultEvent,
+)
 
 ROLE_LABELS = {
     "system": "系统",
@@ -110,11 +118,7 @@ def _print_value(value: Any, console: Console) -> None:
         console.print(Syntax(json.dumps(value, ensure_ascii=False, indent=2), "json"))
 
 
-def render_event(
-    event: AnyEvent,
-    *,
-    console: Console | None = None
-) -> None:
+def render_event(event: AnyEvent, *, console: Console | None = None) -> None:
     """将运行事件显示到中断"""
     console = console if console is not None else Console()
 
@@ -126,19 +130,21 @@ def render_event(
         )
     elif isinstance(event, ToolCallEvent):
         console.print()
-        call=event.tool_call
+        call = event.tool_call
         console.print(Text(f"工具调用：{call.name} | ID: {call.id}"))
         console.print(Text(call.arguments))
     elif isinstance(event, ToolResultEvent):
         console.print()
         res = event.tool_result
         console.print(Text(f"工具执行结果 | Id: {event.tool_call_id}"))
-        console.print(
-            Text(
-                f"状态： {res.status.value} | "
-                f"截断： {'是' if res.truncated else '否'}"
-            )
-        )
+        console.print(Text(f"状态： {res.status.value} | 截断： {'是' if res.truncated else '否'}"))
         _print_value(res.output, console)
+    elif isinstance(event, RunFinished):
+        console.print()
+        if event.reason == "cancelled":
+            console.print(Text("运行已取消", style="yellow"))
+    elif isinstance(event, ErrorEvent):
+        console.print()
+        console.print(Text(event.message), style="red")
 
     pass

@@ -121,6 +121,7 @@ class ToolCallEvent(AgentEvent):
     type: Literal[EventType.TOOL_CALL] = EventType.TOOL_CALL
     tool_call: ToolCall
 
+
 class ToolResultEvent(AgentEvent):
     type: Literal[EventType.TOOL_RESULT] = EventType.TOOL_RESULT
     tool_result: ToolResult
@@ -142,7 +143,7 @@ class StepFinished(AgentEvent):
 
 
 class RunFinished(AgentEvent):
-    """整次任务结束。"""
+    """一次运行已终止，具体原因由 reason 表示，不代表任务成功。"""
 
     type: Literal[EventType.RUN_FINISHED] = EventType.RUN_FINISHED
     reason: str

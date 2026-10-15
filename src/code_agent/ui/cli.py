@@ -19,7 +19,7 @@ from rich.console import Console
 from code_agent import __version__
 from code_agent.config import Settings, load_settings
 from code_agent.core.agent import create_agent
-from code_agent.ui.render import print_history, render_event
+from code_agent.ui.render import render_event
 
 app = typer.Typer(add_completion=False, help="code_agent —— 学习型编程 Agent")
 console = Console()
@@ -48,22 +48,11 @@ def ask(
 
 
 async def _run_once(prompt: str, settings: Settings) -> int:
-    """执行一次 Agent 任务并显示运行历史,返回进程退出码。"""
+    """执行一次 Agent 任务并显示运行事件,返回进程退出码。"""
     agent = create_agent(settings)
     try:
-        answer = await agent.run(
-            prompt,
-            on_event=lambda event: render_event(event, console=console)
-        )
-        console.print() # 正常结束
-    except Exception as exc:
-        console.print()
-        console.print(
-            f"调用失败: {type(exc).__name__}: {exc}",
-            style="bold red",
-            markup=False,
-            highlight=False,
-        )
+        await agent.run(prompt, on_event=lambda event: render_event(event, console=console))
+    except Exception:
         return 1
 
     return 0

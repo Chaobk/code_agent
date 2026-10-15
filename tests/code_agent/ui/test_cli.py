@@ -154,6 +154,7 @@ def test_prompt_displays_final_answer_without_tools(monkeypatch: pytest.MonkeyPa
 
     assert result.exit_code == 0
     assert result.stdout.count("你好[bold]") == 1
+    assert result.stdout.endswith("你好[bold]\n")
     assert "END_TASK" not in result.stdout
     assert "命令解释器：Bash" not in result.stdout
     request.assert_awaited_once()
@@ -179,14 +180,36 @@ def test_prompt_reports_model_error(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None, DEEPSEEK_API_KEY="test-key")
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
     monkeypatch.setattr(
-        client_module.litellm, "acompletion", AsyncMock(side_effect=RuntimeError("请求失败"))
+        client_module.litellm, "acompletion", AsyncMock(side_effect=RuntimeError("请求失败[bold]"))
     )
 
     result = runner.invoke(app, ["-p", "你好"])
 
     assert result.exit_code == 1
-    assert "调用失败" in result.stdout
-    assert "请求失败" in result.stdout
+    assert result.stdout.count("RuntimeError: 请求失败[bold]") == 1
+
+
+def test_prompt_reports_stream_error_after_partial_text_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(_env_file=None, DEEPSEEK_API_KEY="test-key")
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+
+    async def interrupted_response() -> AsyncIterator[ModelResponseStream]:
+        yield ModelResponseStream(choices=[{"delta": {"content": "部分正文[bold]"}}])
+        raise RuntimeError("断流[red]")
+
+    request = AsyncMock(return_value=interrupted_response())
+    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+
+    result = runner.invoke(app, ["-p", "你好"])
+
+    assert result.exit_code == 1
+    assert result.stdout.count("部分正文[bold]") == 1
+    assert result.stdout.count("RuntimeError: 断流[red]") == 1
+    assert result.stdout.index("部分正文[bold]") < result.stdout.index("RuntimeError: 断流[red]")
+    assert "部分正文[bold]\n" in result.stdout
+    request.assert_awaited_once()
 
 
 @pytest.mark.parametrize("max_steps", [1, 2], ids=["step-limit", "model-error"])
@@ -210,9 +233,8 @@ def test_prompt_preserves_tool_history_when_run_fails(
     assert "已获得的工具观察[bold]" in result.stdout
     assert "pwd" in result.stdout
     assert "completed" in result.stdout
-    assert "调用失败" in result.stdout
-    error = "达到最大请求轮数: 1" if max_steps == 1 else "连接中断[bold]"
-    assert error in result.stdout
-    assert result.stdout.index("已获得的工具观察") < result.stdout.index("调用失败")
+    error = "达到最大请求轮数" if max_steps == 1 else "RuntimeError: 连接中断[bold]"
+    assert result.stdout.count(error) == 1
+    assert result.stdout.index("已获得的工具观察") < result.stdout.index(error)
     assert request.await_count == max_steps
     bash.assert_awaited_once()
