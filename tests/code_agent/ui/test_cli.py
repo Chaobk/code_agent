@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from litellm import Timeout
 from litellm.types.utils import ModelResponseStream
 from typer.testing import CliRunner
 
@@ -176,28 +177,44 @@ def test_prompt_preserves_old_marker_as_literal_final_text(monkeypatch: pytest.M
     request.assert_awaited_once()
 
 
-def test_prompt_reports_model_error(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("请求失败[bold]"),
+        Timeout(message="请求超时[bold]", model="test-model", llm_provider="deepseek"),
+    ],
+    ids=["model-error", "request-timeout"],
+)
+def test_prompt_reports_model_error(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
     settings = Settings(_env_file=None, DEEPSEEK_API_KEY="test-key")
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
-    monkeypatch.setattr(
-        client_module.litellm, "acompletion", AsyncMock(side_effect=RuntimeError("请求失败[bold]"))
-    )
+    request = AsyncMock(side_effect=error)
+    monkeypatch.setattr(client_module.litellm, "acompletion", request)
 
     result = runner.invoke(app, ["-p", "你好"])
 
     assert result.exit_code == 1
-    assert result.stdout.count("RuntimeError: 请求失败[bold]") == 1
+    assert result.stdout.count(f"{type(error).__name__}: {error}") == 1
+    request.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("断流[red]"),
+        Timeout(message="流读取超时[red]", model="test-model", llm_provider="deepseek"),
+    ],
+    ids=["stream-error", "stream-timeout"],
+)
 def test_prompt_reports_stream_error_after_partial_text_once(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
     settings = Settings(_env_file=None, DEEPSEEK_API_KEY="test-key")
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
 
     async def interrupted_response() -> AsyncIterator[ModelResponseStream]:
         yield ModelResponseStream(choices=[{"delta": {"content": "部分正文[bold]"}}])
-        raise RuntimeError("断流[red]")
+        raise error
 
     request = AsyncMock(return_value=interrupted_response())
     monkeypatch.setattr(client_module.litellm, "acompletion", request)
@@ -206,8 +223,9 @@ def test_prompt_reports_stream_error_after_partial_text_once(
 
     assert result.exit_code == 1
     assert result.stdout.count("部分正文[bold]") == 1
-    assert result.stdout.count("RuntimeError: 断流[red]") == 1
-    assert result.stdout.index("部分正文[bold]") < result.stdout.index("RuntimeError: 断流[red]")
+    error_text = f"{type(error).__name__}: {error}"
+    assert result.stdout.count(error_text) == 1
+    assert result.stdout.index("部分正文[bold]") < result.stdout.index(error_text)
     assert "部分正文[bold]\n" in result.stdout
     request.assert_awaited_once()
 

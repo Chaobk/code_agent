@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from litellm import Timeout
 from litellm.types.utils import ModelResponse, ModelResponseStream
 
 from code_agent.config import Settings
@@ -14,6 +15,7 @@ from code_agent.llm.client import LLMClient
 
 @pytest.fixture(autouse=True)
 def block_model_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODE_AGENT_REQUEST_TIMEOUT_SECONDS", raising=False)
     # 每个测试必须显式模拟请求，避免错误实现访问真实服务。
     for name in ("acompletion", "aresponses"):
         monkeypatch.setattr(
@@ -100,6 +102,7 @@ async def test_complete_turn_returns_original_response_with_tool_calls_and_usage
         stream=False,
         api_key="test-key",
         base_url="https://example.invalid",
+        timeout=60.0,
     )
 
 
@@ -160,6 +163,7 @@ async def test_stream_turn_preserves_all_chunks_incrementally(
         stream=True,
         api_key="test-key",
         base_url="https://example.invalid",
+        timeout=60.0,
     )
 
 
@@ -183,7 +187,9 @@ async def test_turn_omits_unset_credentials_and_tools(
     else:
         assert await client.complete_turn([]) is response
         assert response.choices[0].message.content == "完整文本"
-    request.assert_awaited_once_with(model="test-model", messages=[], stream=streaming)
+    request.assert_awaited_once_with(
+        model="test-model", messages=[], stream=streaming, timeout=60.0
+    )
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -205,13 +211,20 @@ async def test_turn_preserves_explicit_empty_tools(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("请求失败"),
+        Timeout(message="请求超时", model="test-model", llm_provider="deepseek"),
+    ],
+    ids=["request-error", "request-timeout"],
+)
 async def test_turn_propagates_request_error(
-    monkeypatch: pytest.MonkeyPatch, client: LLMClient, streaming: bool
+    monkeypatch: pytest.MonkeyPatch, client: LLMClient, streaming: bool, error: Exception
 ) -> None:
-    error = RuntimeError("请求失败")
     monkeypatch.setattr(client_module.litellm, "acompletion", AsyncMock(side_effect=error))
 
-    with pytest.raises(RuntimeError, match="请求失败") as caught:
+    with pytest.raises(type(error)) as caught:
         if streaming:
             await anext(client.stream_turn([]))
         else:
@@ -219,10 +232,17 @@ async def test_turn_propagates_request_error(
     assert caught.value is error
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("连接中断"),
+        Timeout(message="流读取超时", model="test-model", llm_provider="deepseek"),
+    ],
+    ids=["stream-error", "stream-timeout"],
+)
 async def test_stream_turn_preserves_chunk_before_stream_error(
-    monkeypatch: pytest.MonkeyPatch, client: LLMClient
+    monkeypatch: pytest.MonkeyPatch, client: LLMClient, error: Exception
 ) -> None:
-    error = RuntimeError("连接中断")
     chunk = ModelResponseStream(choices=[{"delta": {"content": "已收到的文本"}}])
 
     async def events() -> AsyncIterator[ModelResponseStream]:
@@ -233,9 +253,32 @@ async def test_stream_turn_preserves_chunk_before_stream_error(
     stream = client.stream_turn([])
 
     assert await anext(stream) is chunk
-    with pytest.raises(RuntimeError, match="连接中断") as caught:
+    with pytest.raises(type(error)) as caught:
         await anext(stream)
     assert caught.value is error
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_turn_forwards_configured_timeout(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    client = LLMClient(
+        Settings(_env_file=None, DEEPSEEK_API_KEY="test-key", request_timeout_seconds=12.5)
+    )
+
+    async def events() -> AsyncIterator[ModelResponseStream]:
+        yield ModelResponseStream(choices=[])
+
+    request = AsyncMock(return_value=events() if streaming else ModelResponse())
+    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+
+    if streaming:
+        assert len([chunk async for chunk in client.stream_turn([])]) == 1
+    else:
+        await client.complete_turn([])
+
+    request.assert_awaited_once()
+    assert request.await_args.kwargs["timeout"] == 12.5
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -289,6 +332,7 @@ async def test_turn_request_overrides_do_not_change_client_defaults(
         "model": "other-model",
         "api_key": "other-test-key",
         "base_url": "https://other.example.invalid",
+        "timeout": 2.5,
     }
     if streaming:
         assert len([chunk async for chunk in client.stream_turn([], **overrides)]) == 1
@@ -308,6 +352,7 @@ async def test_turn_request_overrides_do_not_change_client_defaults(
         "stream": streaming,
         "api_key": "test-key",
         "base_url": "https://example.invalid",
+        "timeout": 60.0,
     }
 
 

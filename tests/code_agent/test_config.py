@@ -12,6 +12,7 @@ _ENV_NAMES = (
     "CODE_AGENT_MODEL",
     "CODE_AGENT_BASE_URL",
     "CODE_AGENT_MAX_STEPS",
+    "CODE_AGENT_REQUEST_TIMEOUT_SECONDS",
     "CODE_AGENT_LOG_DIR",
     "CODE_AGENT_WORKSPACE_DIR",
     "CODE_AGENT_BASH_PATH",
@@ -36,6 +37,7 @@ def test_defaults() -> None:
     assert settings.model == "deepseek/deepseek-chat"
     assert settings.base_url == "https://api.deepseek.com"
     assert settings.max_steps == 30
+    assert settings.request_timeout_seconds == 60.0
     assert isinstance(settings.log_dir, Path)
     assert settings.workspace_dir == Path.cwd()
     assert settings.bash_path == "bash"
@@ -76,5 +78,27 @@ def test_other_fields_use_code_agent_prefix(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_max_steps_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CODE_AGENT_MAX_STEPS", "0")
+    with pytest.raises(ValidationError):
+        _settings()
+
+
+def test_request_timeout_uses_code_agent_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODE_AGENT_REQUEST_TIMEOUT_SECONDS", "12.5")
+
+    assert _settings().request_timeout_seconds == 12.5
+
+
+def test_request_timeout_accepts_positive_fraction() -> None:
+    settings = Settings(_env_file=None, request_timeout_seconds=0.25)
+
+    assert settings.request_timeout_seconds == 0.25
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf", "not-a-number"])
+def test_request_timeout_rejects_nonpositive_nonfinite_or_invalid_value(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("CODE_AGENT_REQUEST_TIMEOUT_SECONDS", value)
+
     with pytest.raises(ValidationError):
         _settings()

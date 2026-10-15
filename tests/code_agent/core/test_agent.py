@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from litellm import Timeout
 from litellm.types.utils import ModelResponse, ModelResponseStream
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -1233,6 +1234,36 @@ async def test_run_rejects_protocol_failure_without_commit_or_execution(
     handler.assert_not_called()
     assert await agent.run("继续") == "恢复成功"
     assert client.requests[1]["messages"] == [*history, {"role": "user", "content": "继续"}]
+
+
+@pytest.mark.parametrize("phase", ["request", "midstream", "after-finish"])
+async def test_run_propagates_sdk_timeout_without_committing_or_executing(
+    registry: ToolRegistry, handler: Mock, phase: str
+) -> None:
+    error = Timeout(message="模型等待超时[bold]", model="test-model", llm_provider="deepseek")
+    interrupted_stream = [
+        stream_chunk(
+            "临时正文",
+            calls=[{"index": 0, **tool_call("uncommitted")}],
+            finish_reason="tool_calls" if phase == "after-finish" else None,
+        ),
+        error,
+    ]
+    client = FakeLLM([error if phase == "request" else interrupted_stream])
+    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    events: list[AnyEvent] = []
+
+    with pytest.raises(Timeout) as caught:
+        await agent.run("执行任务", on_event=events.append)
+
+    assert caught.value is error
+    _assert_run_finished(events, "error")
+    assert isinstance(events[-2], ErrorEvent)
+    assert events[-2].message == f"Timeout: {error}"
+    assert [message["role"] for message in agent.history.get_model_messages()] == ["system", "user"]
+    assert not any(isinstance(event, (ToolCallEvent, ToolResultEvent)) for event in events)
+    assert len(client.requests) == 1
+    handler.assert_not_called()
 
 
 async def test_run_cancels_inflight_stream_without_committing_or_executing(
