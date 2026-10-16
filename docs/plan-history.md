@@ -2,6 +2,16 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-16 M2b 真实流式靶子运行与独立复核
+
+- 用户要求 Codex 执行完整流程，并明确授权向当前 DeepSeek 服务发送本次独立靶子的任务、代码、测试、文档、命令结果和本地路径。应用版本 be7cfb1，模型 deepseek/deepseek-chat，max_steps=12，request_timeout_seconds=60.0。
+- 复用本机可用的 M1 average 小任务基线，在 artifacts/m2b-streaming-20261016-run-001/target 创建独立 Git 靶子，保留原靶子的未提交修改；初始独立测试确认 4 项通过、1 项失败，average([]) 抛出 ZeroDivisionError。
+- 通过现有 CLI 的 python -u -m code_agent.ui.cli -p 入口运行真实模型，16.64 秒后正常退出，退出码 0。模型读取任务与测试、复现失败、只修改 math_utils.py、运行测试并展示 diff；8 次 Bash 调用与 8 个结果按 ID 配对，最终总结标记出现一次，CLI 输出在结束前分多次到达。
+- 模型结束后独立复跑测试：5 项通过；diff 仅涉及 math_utils.py，增加空序列返回 0.0 并更新 docstring。其他固定材料 SHA-256 全部不变，无新增未跟踪文件。靶子修改保留供检查，模型未提交或推送。
+- 第一次模型测试命令在 pytest 后执行 echo，Bash 进程退出码为 0，输出 EXIT=1；模型正确识别失败。独立初始测试退出码为 1，最终独立测试退出码为 0，再次区分工具完成与任务达标。
+- 原始记录和演示位于 artifacts/m2b-streaming-20261016-run-001/，含 case.json、prompt.txt、初始/最终测试、CLI 输出与到达时刻、最终 diff、verification.json 和 report.md；原始临时材料不纳入提交。stdout 读取块不等同于模型 chunk 或 HTTP 数据块。
+- 本次正常路径的外部检查通过，未人为触发真实网络超时、断流或取消。M2b 等待用户确认，尚未进入 M3。
+
 ## 2026-10-16 M2b 模型请求超时实现与回归
 
 - 用户实现 Settings.request_timeout_seconds：默认 60.0 秒，通过 gt=0 和 allow_inf_nan=False 限定为有限正数；沿用 CODE_AGENT_ 环境变量前缀。
