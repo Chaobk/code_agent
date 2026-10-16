@@ -49,7 +49,9 @@ class Settings(BaseSettings):
         description="Bash 可执行文件路径或 PATH 中的命令名;不会自动切换其他 shell",
     )
 
-    # 模型请求超时配置待下一学习小步实现。
+    request_timeout_seconds: float = Field(
+        default=60.0, gt=0, allow_inf_nan=False, description="模型请求的超时时间"
+    )
 
 
 def load_settings() -> Settings:

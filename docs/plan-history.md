@@ -2,6 +2,13 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-16 M2b 模型请求超时实现与回归
+
+- 用户实现 Settings.request_timeout_seconds：默认 60.0 秒，通过 gt=0 和 allow_inf_nan=False 限定为有限正数；沿用 CODE_AGENT_ 环境变量前缀。
+- 用户在 LLMClient._request_kwargs 中映射为 timeout，流式与非流式请求共用；后续 kwargs 覆盖默认值，Settings 保持不变。Codex 仅对配置字段做格式整理。
+- 完整回归 uv run pytest -q：241 项通过，1 项 Pydantic 对依赖 TypedDict 的 ReadOnly 限定符警告。Ruff 检查、两处变更源码的格式检查及 git diff --check 通过。
+- 模拟 SDK 超时验证应用边界，不代表真实网络超时已验证。下一步准备独立靶子的初始红测，再完成真实流式代码修改、测试与 diff 复核；M2b 整体尚未验收。
+
 ## 2026-10-15 M2b 模型请求超时契约与失败测试阶段性保存
 
 - 用户决定先保存进度。核心配置字段与参数透传尚未手写，不标记本小步或 M2b 已完成。

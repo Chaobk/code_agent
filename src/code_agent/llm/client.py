@@ -37,6 +37,7 @@ class LLMClient:
         request_kwargs: dict[str, Any] = {
             "model": self._settings.model,
             "messages": list(messages),
+            "timeout": self._settings.request_timeout_seconds,
         }
 
         if self._settings.api_key:
