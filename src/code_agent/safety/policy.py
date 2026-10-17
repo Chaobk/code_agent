@@ -4,3 +4,49 @@ M3 实现:校验执行配置,拒绝选定的危险操作,明确实际保护范�
 固定 cwd 和字符串拦截不是 Bash 文件隔离;强沙箱按实际需求另行验证。
 M4 由 UI 采集确认,策略决定是否执行;执行工具前必须先过策略检查。
 """
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class ExecutionEnvironment:
+    workspace_dir: Path
+    bash_path: str
+
+
+def resolve_execution_environment(
+    *, workspace_dir: Path, bash_path: str
+) -> ExecutionEnvironment:
+    try:
+        resolved_workspace = workspace_dir.expanduser().resolve()
+
+        if not resolved_workspace.is_dir():
+            raise ValueError(
+                f"workspace_dir 必须是已存在的目录：{resolved_workspace}"
+            )
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"workspace_dir 路径处理失败: {exc}") from exc
+
+    if not bash_path.strip():
+        raise ValueError("bash_path 不能为空")
+
+    try:
+        candidate = os.path.expanduser(bash_path)
+        found = shutil.which(candidate)
+
+        if found is None:
+            raise ValueError(f"bash_path 无法找到可执行文件：{candidate}")
+
+        resolved_bash = Path(found).resolve()
+
+        if not resolved_bash.is_file():
+            raise ValueError(f"bash_path 必须指向文件：{resolved_bash}")
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"bash_path 路径处理失败：{exc}") from exc
+
+    return ExecutionEnvironment(
+        workspace_dir=resolved_workspace,
+        bash_path=str(resolved_bash)
+    )
