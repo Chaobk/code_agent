@@ -1,4 +1,4 @@
-"""工具系统(D):M2a 工具规格与模型 schema 接口。"""
+"""工具规格与模型调用 schema。"""
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -14,7 +14,7 @@ ToolHandler = Callable[..., ToolOutput | Awaitable[ToolOutput]]
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """一个工具的数据定义;执行环境由核心绑定到 handler,不暴露为模型参数。"""
+    """工具名称、说明、参数模型与执行函数。"""
 
     name: str
     description: str
@@ -22,10 +22,7 @@ class ToolSpec:
     handler: ToolHandler
 
     def to_schema(self) -> dict[str, Any]:
-        """返回 Chat Completions 的 function 工具定义(M2a 用户实现)。
-
-        parameters 来自 args_model.model_json_schema();不包含 handler 等执行细节。
-        """
+        """生成 Chat Completions 工具定义，参数 schema 来自 args_model。"""
         return {
             "type": "function",
             "function": {

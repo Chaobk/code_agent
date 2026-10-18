@@ -1,4 +1,4 @@
-"""工具系统(D):内置工具实现。"""
+"""内置工具及其执行环境绑定。"""
 
 from functools import partial
 from pathlib import Path

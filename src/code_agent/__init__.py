@@ -1,4 +1,4 @@
-"""code_agent —— 一个用于学习 Agent 原理的编程 Agent。"""
+"""编程 Agent。"""
 
 from importlib.metadata import PackageNotFoundError, version
 

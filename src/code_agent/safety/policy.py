@@ -1,9 +1,4 @@
-"""安全与权限(G)。
-
-M3 校验并绑定执行环境;M4c 再实现命令权限判定,明确实际保护范围。
-固定 cwd 和字符串拦截不是 Bash 文件隔离;强沙箱按实际需求另行验证。
-M4c 由 UI 采集确认,策略决定是否执行;执行工具前必须先过策略检查。
-"""
+"""执行目录与 Bash 可执行文件的校验、路径解析。"""
 import os
 import shutil
 from dataclasses import dataclass

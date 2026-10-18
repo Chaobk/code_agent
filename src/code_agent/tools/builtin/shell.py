@@ -1,10 +1,4 @@
-"""内置工具(D/F):shell 执行。
-
-M1 实现 ``BashArgs`` 与异步 ``run_bash``,向模型注册为 ``bash``:
-固定执行目录,返回 stdout / stderr / 退出码 / 超时与截断信息。
-具体参数、输出预算与进程清理约定见 PLAN.md 的 M1 规格。
-M3 校验并绑定执行环境;M4c 再接入执行前的 ``safety`` 权限检查。
-"""
+"""异步 Bash 执行、输出收集与进程清理。"""
 
 import asyncio
 import codecs
@@ -56,17 +50,10 @@ async def run_bash(
     workspace_dir: Path,
     bash_path: str | None = None,
 ) -> ToolResult:
-    """运行一次独立 Bash 命令并返回结构化工具结果(M1 继续完善)。
+    """在指定目录启动独立 Bash 进程，返回输出、退出码与执行状态。
 
-    output 包含 stdout、stderr、exit_code;状态与截断标记放在 ToolResult 上。
-    固定执行目录为 workspace_dir;不跨调用保留 cd 或 export 状态。
-
-    实现顺序:
-    1. create_subprocess_exec 启动 Bash,传入 --noprofile --norc -c command;
-       stdin 使用 DEVNULL,stdout/stderr 使用 PIPE。
-    2. 并发读取两个输出管道,解码为文本并返回实际退出码。
-    3. 加入超时、取消与进程树清理;输出缓冲限制为 MAX_OUTPUT_CHARS。
-    4. 非零退出正常回传;超时标记 timed_out,exit_code 为 null。
+    非零退出保留为 COMPLETED；超时返回 TIMED_OUT 和已收集的输出。
+    超时或取消时清理进程，取消完成清理后继续传播。
     """
     bash_path = "bash" if bash_path is None else bash_path
     try:
@@ -124,10 +111,9 @@ async def run_bash(
 
 
 async def collect_output(process: asyncio.subprocess.Process) -> tuple[str, str, bool]:
-    """并发排空输出管道,stdout/stderr 共用字符预算,超额内容读取后丢弃。
+    """并发读取 stdout/stderr，共用字符保留预算，超额后继续排空。
 
-    预算只限制保留的文本;每次读取及解码仅使用固定大小的临时缓冲。
-    两个流按读取顺序占用预算,增量 UTF-8 解码处理跨块字符及非法字节。
+    按读取顺序分配预算，使用增量 UTF-8 解码处理跨块字符。
     """
     remaining = MAX_OUTPUT_CHARS
     truncated = False
@@ -169,14 +155,11 @@ async def stop_process_tree(
     process: asyncio.subprocess.Process,
     tracked_process: psutil.Process | None,
 ) -> None:
-    """尽力清理已发现的进程树,并由 asyncio 回收直接子进程。
+    """终止已发现的后代进程，并通过 asyncio 回收直接子进程。
 
-    tracked_process 在启动时创建并保留,避免清理时根据旧 PID 重新绑定进程。
-    psutil 同步查询和等待在线程中执行,两个等待阶段各最多两秒;
-    asyncio 回收也最多等待两秒。进程消失可忽略,权限错误和存活者不得吞掉。
-
-    调用方应持续读取 stdout/stderr,否则进程的管道关闭可能阻塞回收。
-    子进程查询是快照,无法保证清理父进程提前退出或快照之后新生的后代。
+    tracked_process 必须是在启动时保存的进程对象，以免 PID 复用后清理错误目标。
+    同步查询在线程中执行，各等待阶段都有超时；调用方须持续排空输出管道。
+    后代查询基于快照，可能遗漏查询后新建或已脱离父进程的后代。
     """
     if tracked_process is not None:
         if tracked_process.pid != process.pid or tracked_process.pid == os.getpid():

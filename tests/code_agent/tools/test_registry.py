@@ -1,4 +1,4 @@
-"""M2a 工具注册表测试:不调用模型,不执行真实命令。"""
+"""工具注册、参数校验与调用分发测试。"""
 
 import asyncio
 import inspect
@@ -80,7 +80,7 @@ def test_register_rejects_duplicate_name_and_preserves_original_spec() -> None:
 
 
 async def test_execute_returns_structured_validation_error_without_running_handler() -> None:
-    """首个失败测试:无效参数应回灌统一错误结果,而不是启动工具。"""
+    """参数无效时返回错误结果，不调用 handler。"""
     handler = AsyncMock(return_value=ToolResult(output="不应执行", status=ToolStatus.COMPLETED))
     registry = ToolRegistry()
     registry.register(

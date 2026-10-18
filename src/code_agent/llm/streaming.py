@@ -1,8 +1,4 @@
-"""M2b：模型层组装一轮流式响应；组装逻辑由用户实现。
-
-组装器只处理分片，不打印、不修改历史、不执行工具。
-调用方在流正常耗尽后调用 finish；流异常或取消时不提交本轮。
-"""
+"""将流式文本和工具调用分片组装为完整助手消息。"""
 
 from dataclasses import dataclass
 from typing import Any
@@ -12,14 +8,14 @@ from litellm.types.utils import ChatCompletionDeltaToolCall, ModelResponseStream
 
 @dataclass
 class AssembledTurn:
-    """组装后的助手消息，使用 ConversationHistory 接受的消息格式。"""
+    """组装后的助手消息及结束原因。"""
 
     message: dict[str, Any]
     finish_reason: str
 
 
 class TurnAssembler:
-    """每轮新建一个实例，push 累计增量，finish 检查并生成完整消息"""
+    """累积一次模型请求的响应分片，在 finish 时校验完整性。"""
 
     def __init__(self) -> None:
         self._text_parts: list[str] = []

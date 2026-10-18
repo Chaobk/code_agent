@@ -1,4 +1,4 @@
-"""命令行入口的单测(H)。"""
+"""命令行入口测试。"""
 
 from collections.abc import AsyncIterator
 from copy import deepcopy

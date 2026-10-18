@@ -1,4 +1,4 @@
-"""配置加载的单测(J)。"""
+"""运行配置的加载与校验测试。"""
 
 from pathlib import Path
 

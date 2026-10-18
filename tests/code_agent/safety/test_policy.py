@@ -1,4 +1,4 @@
-"""执行环境校验回归测试(G):使用临时文件,不启动 Bash 或请求模型。"""
+"""执行环境校验测试，使用临时文件模拟 Bash 路径。"""
 
 import asyncio
 import subprocess

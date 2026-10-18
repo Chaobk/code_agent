@@ -1,13 +1,4 @@
-"""交互层(H):命令行入口。
-
-当前支持两个开关:
-
-- ``--version``;
-- ``-p/--prompt``:命令行单次模式,执行 Agent 任务并显示运行历史。
-
-``-p`` 模式用于自动化调试与验收。M4 再接入终端多轮会话;当前无参数运行
-仍提示用法并退出。参数入口不承载会话、权限判断或 agent 决策。
-"""
+"""命令行入口，支持版本查询和单次任务执行。"""
 
 from __future__ import annotations
 
@@ -27,7 +18,7 @@ console = Console()
 
 
 def _echo_version(value: bool) -> None:
-    """``--version`` 的回调(eager:在其它参数校验之前就执行)。"""
+    """输出版本号，在其他参数校验前执行。"""
     if value:
         console.print(f"code-agent {__version__}")
         raise typer.Exit()
@@ -68,7 +59,7 @@ async def _run_once(prompt: str, settings: Settings) -> int:
 
 
 def main() -> None:
-    """``pyproject.toml`` 中 ``[project.scripts]`` 指向的入口。"""
+    """项目脚本入口。"""
     app()
 
 

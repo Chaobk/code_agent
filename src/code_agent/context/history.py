@@ -1,11 +1,4 @@
-"""上下文管理(B):消息历史。
-
-M1 沿用 Agent 中的顺序历史;M2a 抽出会话状态与消息历史并保护工具配对。
-M6 把裁剪策略抽成可替换接口(默认"保留 system + 最近 N 轮 + 丢弃最老工具输出")。
-
-源码文件由 agent 按需调用 Bash 获取;不自动注入全部项目文件。
-系统指令与明确选择的少量项目记忆是不同的上下文来源,需分别控制范围。
-"""
+"""会话消息存储与工具调用配对校验。"""
 
 from copy import deepcopy
 from typing import Any
@@ -14,7 +7,7 @@ from code_agent.events import ToolCall
 
 
 class ConversationHistory:
-    """维护一份会话消息和工具配对状态，不执行工具或安排用户输入。"""
+    """保存会话消息，并校验工具调用与结果的配对关系。"""
 
     def __init__(self) -> None:
         self._messages: list[dict[str, Any]] = []
@@ -37,7 +30,7 @@ class ConversationHistory:
         if self._pending_calls and role != "tool":
             raise ValueError("必须先补齐当前工具调用的结果")
 
-        # 先准备状态变化，不直接修改内部数据。
+        # 暂存配对变更，避免校验失败时留下部分状态。
         new_calls: dict[str, ToolCall] = {}
         completed_id: str | None = None
 
@@ -82,7 +75,6 @@ class ConversationHistory:
 
                 completed_id = call_id
 
-        # 全部校验通过后，再更新历史和配对状态。
         self._messages.append(saved)
         self._pending_calls.update(new_calls)
 

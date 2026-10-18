@@ -1,9 +1,4 @@
-"""模型层(A):用 litellm 统一调用各家模型。
-
-将 Settings 翻译为 Chat Completions 请求参数，原样返回完整响应或流式 chunk。
-文本与工具参数分片由 llm.streaming 组装，历史提交与工具执行由 core 编排；
-M6 再接入用量与成本统计。
-"""
+"""LiteLLM Chat Completions 异步客户端。"""
 
 from __future__ import annotations
 
@@ -17,10 +12,9 @@ from code_agent.config import Settings
 
 
 class LLMClient:
-    """封装 LiteLLM 请求，保留完整响应与流式 chunk。
+    """异步调用 LiteLLM，返回完整响应或原始流式分片。
 
-    通过 ``**kwargs`` 透传 tools、tool_choice 等请求参数，并覆盖 Settings 默认值。
-    stream 由两个调用方法固定控制，不接受作为额外参数传入。
+    额外关键字参数覆盖配置默认值；stream 参数由调用方法决定。
     """
 
     def __init__(self, settings: Settings) -> None:

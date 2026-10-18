@@ -1,16 +1,4 @@
-"""内核:Agent 编排器。
-
-M1 实现。这里是**唯一**把各能力串起来的地方:
-
-    用户输入 ─► modes(决定下一轮请求)─► llm(调用模型)
-                    ▲                        │
-                    │                        ▼
-              context(历史) ◄── tools(执行工具) ◄── events(推给界面)
-
-跨能力业务连接集中在核心,UI 调用核心公开入口;
-能力通过共享契约与传入接口协作,不引入循环依赖。
-M2a 将当前演示入口的终端渲染依赖移出核心业务模块。
-"""
+"""Agent 运行循环，协调模型请求、工具执行和会话历史。"""
 
 import asyncio
 from collections.abc import Callable
@@ -70,7 +58,6 @@ class Agent:
             if registry is not None
             else create_builtin_registry(workspace_dir=self.workspace_dir, bash_path=bash_path)
         )
-        # 每个 Agent 保留自己的绑定,避免共享注册表被另一会话覆盖。
         self.registry = registry
         self.tools = registry.model_tools()
         tool_description = "\n".join(
@@ -105,7 +92,6 @@ class Agent:
 
                 self.history.add_message(assembled_turn.message)
             except asyncio.CancelledError:
-                # 由于取消导致的结束
                 emit(RunFinished(reason="cancelled"))
                 raise
             except Exception as exc:
@@ -165,11 +151,9 @@ class Agent:
                 raise RuntimeError("模型工具调用，但没有返回调用信息")
 
             if assembled_turn.finish_reason == "stop" and tool_calls == []:
-                # 正常结束，补充信号
                 emit(RunFinished(reason="completed"))
                 return assembled_turn.message["content"] or ""
 
-        # 轮数耗尽，先发信号
         emit(ErrorEvent(message=f"达到最大请求轮数：{self.max_steps}"))
         emit(RunFinished(reason="max_steps"))
         raise RuntimeError(f"达到最大请求轮数: {self.max_steps}")
@@ -181,12 +165,7 @@ class Agent:
 
 
 def create_agent(settings: Settings) -> Agent:
-    """根据应用配置创建单次任务使用的 Agent(M1)。
-
-    在核心中构造 LLMClient,将 max_steps、workspace_dir、bash_path 绑定到 Agent。
-    CLI 调用此入口后 await agent.run(prompt),由事件回调实时显示运行过程。
-    """
-    # 先校验一下路径配置
+    """校验执行环境，并按应用配置创建 Agent。"""
     env = resolve_execution_environment(
         workspace_dir=settings.workspace_dir, bash_path=settings.bash_path
     )

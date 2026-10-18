@@ -1,11 +1,4 @@
-"""内核事件与消息模型 —— 全系统唯一的共享契约。
-
-共享消息、工具结果与事件契约;业务编排集中在核心,能力通过契约协作:
-
-    模型输出 ──► Event ──► 界面渲染 / 轨迹落盘
-                    ▲
-    工具执行结果 ────┘
-"""
+"""消息、工具结果与运行事件的数据模型。"""
 
 from __future__ import annotations
 
@@ -31,11 +24,7 @@ class ModelRequest(BaseModel):
 
 
 class ToolCall(BaseModel):
-    """模型请求的一次工具调用。
-
-    ``arguments`` 是模型给回的 JSON **字符串**(未解析)。解析与校验由工具层负责 ——
-    模型层不替它做这个决定。
-    """
+    """模型请求的工具调用，arguments 保存尚未解析的 JSON 字符串。"""
 
     id: str
     name: str
@@ -43,38 +32,31 @@ class ToolCall(BaseModel):
 
 
 class ToolStatus(StrEnum):
-    """工具调用的结束状态,不表示命令零退出或用户任务已经完成。
+    """工具调用的结束状态；进程退出码保存在 ToolResult.output 中。
 
-    取消不转换为这些状态:清理执行进程后继续传播 CancelledError。
+    取消通过 CancelledError 传播。
     """
 
-    # 工具完成调用并取得有效观察;Shell 非零退出(如测试失败)也属于此状态。
-    # 原始进程退出码保留在 ToolResult.output 中,由模型判断命令的具体结果。
+    # 已取得结果，包括 Bash 非零退出。
     COMPLETED = "completed"
 
-    # 工具自身无法正常完成调用,如 Bash 无法启动、执行目录无效或无权限。
-    # 失败原因放在 ToolResult.output 中;Shell 没有退出码时使用 None。
+    # 参数校验或执行失败，原因保存在 output 中。
     ERROR = "error"
 
-    # 超过工具执行时限;清理进程后返回超时原因和已捕获的部分输出。
-    # Shell 的原始退出码按约定使用 None,不将超时归为普通 ERROR。
+    # 执行超时，保留已取得的部分输出。
     TIMED_OUT = "timed_out"
 
 
 class ToolResult(BaseModel):
-    """
-    工具输出的统一格式
-    """
+    """工具输出、结束状态与截断标记。"""
 
     output: JsonValue
-    # 工具调用的结束状态;具体退出码、失败原因等观察信息放在 output 中。
     status: ToolStatus
-    # 工具输出是否被截断
     truncated: bool = False
 
 
 class Message(BaseModel):
-    """一轮对话消息(OpenAI chat 风格的超集)。"""
+    """对话消息，包含正文及工具调用关联信息。"""
 
     role: Role
     content: str = ""
@@ -83,7 +65,7 @@ class Message(BaseModel):
 
 
 class EventType(StrEnum):
-    """事件类型。界面与轨迹层只依赖这些类型,不依赖任何内部实现。"""
+    """运行事件类型。"""
 
     TEXT_DELTA = "text_delta"
     ASSISTANT_MESSAGE = "assistant_message"
@@ -109,7 +91,7 @@ class TextDelta(AgentEvent):
 
 
 class AssistantMessage(AgentEvent):
-    """一轮完整的助手消息(流式结束后产生)。"""
+    """完整助手消息事件。"""
 
     type: Literal[EventType.ASSISTANT_MESSAGE] = EventType.ASSISTANT_MESSAGE
     message: Message
@@ -157,7 +139,7 @@ class ErrorEvent(AgentEvent):
 
 
 class ToolExecutionCancelled(asyncio.CancelledError):
-    """取消执行，同时携带已取得的观察"""
+    """携带已取得工具结果的取消异常。"""
 
     def __init__(self, observation: ToolResult) -> None:
         super().__init__("工具执行被取消")

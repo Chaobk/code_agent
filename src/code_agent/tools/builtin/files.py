@@ -1,9 +1,4 @@
-"""内置工具(D):文件相关。
-
-已有 ``read_file``(带行号);Bash 优先路线下保留实现与测试。
-``list_dir``、``glob``、``search``、``write_file``、``edit_file`` 按需增加,
-不作为 M1/M2 的验收前置条件。
-"""
+"""按行读取文件内容。"""
 
 from pathlib import Path
 
@@ -41,7 +36,6 @@ def read_file(path: str, start_line: int = 1, max_lines: int = 500) -> str:
     with open(fp, encoding="utf-8") as f:
         lines = f.readlines()
 
-    # 行号从 1 开始，列表下标从 0 开始，因此起始位置减 1。
     selected_lines = lines[start_line - 1 : start_line - 1 + max_lines]
     numbered_lines = []
     for line_number, line in enumerate(selected_lines, start=start_line):

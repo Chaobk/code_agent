@@ -1,4 +1,4 @@
-"""Bash 执行器单测(D/F):使用假进程,不依赖本机 Bash 或真实模型。"""
+"""Bash 执行器测试，使用模拟进程。"""
 
 import asyncio
 import sys

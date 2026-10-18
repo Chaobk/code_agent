@@ -10,6 +10,8 @@
 
 面试准备见 [Agent 开发面试问答](docs/interview-guide.md)：参考回答、常见追问、源码与测试入口，以及已实现能力和后续设计的表述边界。
 
+模块职责、运行路径和后续接口安排见 [架构设计](docs/design/architecture.md)。
+
 流式响应的传输与解析见 [网络读取、SSE 事件与模型分片](docs/research/streaming-sse-boundaries.md)：说明分片边界、文本和工具调用提取、处理方案及可复现的无网络实验。
 
 ## 当前进度

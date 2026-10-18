@@ -1,8 +1,4 @@
-"""配置(J):集中管理运行期配置。
-
-所有配置项都来自环境变量或项目根目录的 ``.env``,这样密钥既不会出现在代码里,
-也不会被提交进仓库。读取优先级:环境变量 > .env > 默认值。
-"""
+"""运行配置，从环境变量和 .env 文件加载默认值。"""
 
 from __future__ import annotations
 
@@ -22,7 +18,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # --- A 模型层 ---
+    # 模型连接
     api_key: str = Field(
         default="",
         validation_alias=AliasChoices("DEEPSEEK_API_KEY"),
@@ -33,12 +29,12 @@ class Settings(BaseSettings):
         default="deepseek/deepseek-chat",
         description="litellm 模型标识(带供应商前缀)",
     )
-    max_steps: int = Field(default=30, ge=1, description="单次任务的最大步数(M1 起生效)")
+    max_steps: int = Field(default=30, ge=1, description="单次任务的最大模型请求轮数")
 
-    # --- J 工程 ---
+    # 日志
     log_dir: Path = Field(default=Path(".code_agent/logs"), description="轨迹与日志目录")
 
-    # --- F 执行环境 ---
+    # 工具执行环境
     workspace_dir: Path = Field(
         default_factory=Path.cwd,
         description="工具执行的工作目录;默认使用启动时的当前目录,由核心规范化为绝对路径",

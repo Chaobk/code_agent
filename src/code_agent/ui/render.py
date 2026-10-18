@@ -1,10 +1,4 @@
-"""终端事件输出(H)。
-
-M1 输出工具命令、结果与最终答案;M2 消费 events 定义的流式文本、工具调用、
-工具结果与错误。
-仅负责呈现,不调用模型、不执行工具、不参与 agent 决策。
-提供消息历史查看函数,支持以核心返回的总结替换最后一条助手消息的显示。
-"""
+"""运行事件与消息历史的终端显示。"""
 
 import json
 from collections.abc import Mapping, Sequence
@@ -40,12 +34,10 @@ def print_history(
     final_answer: str | None = None,
     console: Console | None = None,
 ) -> None:
-    """按原始消息顺序显示正文、工具调用和结果,不修改历史。
+    """按消息顺序显示正文、工具调用和结果。
 
-    show_system=False 可隐藏系统提示词;console 可传入自定义输出目标。
-    final_answer 非 None 时仅替换末条无工具调用助手消息的显示正文,不修改历史。
-    核心负责结束判断并返回最终回复,渲染层不判断任务是否结束。
-    正文按原始文本呈现,避免把代码中的方括号当作 Rich 标记。
+    show_system 控制系统消息是否显示。final_answer 可替换末条无工具调用的
+    助手消息正文，仅影响显示。正文按原样输出，不解析 Rich 标记。
     """
     console = console if console is not None else Console()
     tool_names: dict[str, str] = {}
@@ -119,7 +111,7 @@ def _print_value(value: Any, console: Console) -> None:
 
 
 def render_event(event: AnyEvent, *, console: Console | None = None) -> None:
-    """将运行事件显示到中断"""
+    """将运行事件输出到终端。"""
     console = console if console is not None else Console()
 
     if isinstance(event, TextDelta):
