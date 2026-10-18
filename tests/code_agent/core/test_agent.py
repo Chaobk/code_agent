@@ -16,6 +16,7 @@ from litellm.types.utils import ModelResponse, ModelResponseStream
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_agent.config import Settings
+from code_agent.core import agent as agent_module
 from code_agent.core.agent import Agent
 from code_agent.events import (
     AnyEvent,
@@ -1311,3 +1312,63 @@ async def test_run_cancels_inflight_stream_without_committing_or_executing(
     handler.assert_not_called()
     assert await agent.run("继续") == "取消后继续"
     assert client.requests[1]["messages"] == [*history, {"role": "user", "content": "继续"}]
+
+
+@pytest.mark.parametrize("invalid_field", ["workspace_dir", "bash_path"])
+def test_create_agent_validates_environment_before_constructing_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_field: str
+) -> None:
+    workspace = tmp_path / "missing" if invalid_field == "workspace_dir" else tmp_path
+    settings = Settings(
+        _env_file=None,
+        workspace_dir=workspace,
+        bash_path=str(tmp_path / "missing-bash.exe"),
+    )
+    constructor = Mock(side_effect=AssertionError("无效环境不得创建客户端"))
+    monkeypatch.setattr(agent_module, "LLMClient", constructor)
+
+    with pytest.raises(ValueError, match=invalid_field):
+        agent_module.create_agent(settings)
+
+    constructor.assert_not_called()
+
+
+async def test_create_agent_binds_resolved_paths_to_builtin_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "bin" / "creation-review-bash.exe"
+    executable.parent.mkdir()
+    executable.touch()
+    executable.chmod(0o700)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", str(executable.parent))
+    monkeypatch.setenv("PATHEXT", ".EXE")
+    monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+    settings = Settings(
+        _env_file=None,
+        workspace_dir=Path("workspace") / "child" / "..",
+        bash_path=executable.name,
+    )
+    client = FakeLLM(
+        [tool_response([tool_call(name="bash", arguments='{"command":"pwd"}')]), final_response()]
+    )
+    monkeypatch.setattr(agent_module, "LLMClient", Mock(return_value=client))
+    handler = AsyncMock(return_value=ToolResult(output="workspace", status=ToolStatus.COMPLETED))
+    monkeypatch.setattr(builtin_module, "run_bash", handler)
+
+    agent = agent_module.create_agent(settings)
+    monkeypatch.setenv("PATH", "")
+    await agent.run("查看工作目录")
+
+    assert agent.workspace_dir == workspace.resolve()
+    assert str(workspace.resolve()) in client.requests[0]["messages"][0]["content"]
+    handler.assert_awaited_once_with(
+        command="pwd",
+        timeout_seconds=30,
+        workspace_dir=workspace.resolve(),
+        bash_path=str(executable.resolve()),
+    )
+    assert settings.workspace_dir == Path("workspace") / "child" / ".."
+    assert settings.bash_path == executable.name

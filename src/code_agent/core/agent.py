@@ -33,6 +33,7 @@ from code_agent.events import (
 )
 from code_agent.llm.client import LLMClient
 from code_agent.llm.streaming import TurnAssembler
+from code_agent.safety.policy import resolve_execution_environment
 from code_agent.tools.builtin import create_builtin_registry
 from code_agent.tools.registry import ToolRegistry
 
@@ -185,9 +186,14 @@ def create_agent(settings: Settings) -> Agent:
     在核心中构造 LLMClient,将 max_steps、workspace_dir、bash_path 绑定到 Agent。
     CLI 调用此入口后 await agent.run(prompt),由事件回调实时显示运行过程。
     """
+    # 先校验一下路径配置
+    env = resolve_execution_environment(
+        workspace_dir=settings.workspace_dir, bash_path=settings.bash_path
+    )
+
     return Agent(
         LLMClient(settings),
         max_steps=settings.max_steps,
-        workspace_dir=settings.workspace_dir,
-        bash_path=settings.bash_path,
+        workspace_dir=env.workspace_dir,
+        bash_path=env.bash_path,
     )

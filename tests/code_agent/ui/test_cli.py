@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from litellm import Timeout
@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from code_agent import __version__
 from code_agent.config import Settings
+from code_agent.core import agent as agent_module
 from code_agent.events import ToolResult, ToolStatus
 from code_agent.llm import client as client_module
 from code_agent.tools import builtin as builtin_module
@@ -58,7 +59,13 @@ async def text_response(content: str) -> AsyncIterator[ModelResponseStream]:
 
 
 @pytest.fixture(autouse=True)
-def block_model_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+def block_model_requests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    executable = tmp_path / "configured-bash.exe"
+    executable.touch()
+    executable.chmod(0o700)
+    monkeypatch.setenv("CODE_AGENT_WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setenv("CODE_AGENT_BASH_PATH", str(executable))
+    monkeypatch.setenv("PATHEXT", ".EXE")
     for name in ("acompletion", "aresponses"):
         monkeypatch.setattr(
             client_module.litellm,
@@ -83,16 +90,18 @@ def test_missing_prompt_exits_nonzero() -> None:
 
 
 def test_prompt_runs_bash_through_agent_and_displays_history(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """CLI 执行工具循环,回灌观察并显示最终答案。"""
-    workspace = Path.cwd() / "cli-test-workspace"
+    workspace = tmp_path / "cli-test-workspace"
+    workspace.mkdir()
+    executable = tmp_path / "configured-bash.exe"
     settings = Settings(
         _env_file=None,
         DEEPSEEK_API_KEY="test-key",
         max_steps=4,
         workspace_dir=workspace / "child" / "..",
-        bash_path="configured-bash",
+        bash_path=str(executable),
     )
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
     observation = ToolResult(
@@ -132,7 +141,7 @@ def test_prompt_runs_bash_through_agent_and_displays_history(
         command="pwd",
         timeout_seconds=30,
         workspace_dir=workspace.resolve(),
-        bash_path="configured-bash",
+        bash_path=str(executable),
     )
     assert "bash" in result.stdout
     assert "pwd" in result.stdout
@@ -256,3 +265,65 @@ def test_prompt_preserves_tool_history_when_run_fails(
     assert result.stdout.index("已获得的工具观察") < result.stdout.index(error)
     assert request.await_count == max_steps
     bash.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "invalid_case, expected_field",
+    [
+        ("missing-workspace", "workspace_dir"),
+        ("file-workspace", "workspace_dir"),
+        ("blank-bash", "bash_path"),
+        ("missing-bash", "bash_path"),
+    ],
+)
+def test_prompt_reports_invalid_execution_environment_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_case: str,
+    expected_field: str,
+) -> None:
+    workspace = tmp_path
+    bash_path = str(tmp_path / "configured-bash.exe")
+    if invalid_case == "missing-workspace":
+        workspace = tmp_path / "missing-workspace"
+    elif invalid_case == "file-workspace":
+        workspace = tmp_path / "workspace-file"
+        workspace.touch()
+    elif invalid_case == "blank-bash":
+        bash_path = " "
+    else:
+        bash_path = str(tmp_path / "missing-bash.exe")
+    settings = Settings(
+        _env_file=None,
+        DEEPSEEK_API_KEY="test-key",
+        workspace_dir=workspace,
+        bash_path=bash_path,
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    constructor = Mock(side_effect=AssertionError("启动失败不得创建客户端"))
+    monkeypatch.setattr(agent_module, "LLMClient", constructor)
+    request = AsyncMock()
+    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    handler = AsyncMock()
+    monkeypatch.setattr(builtin_module, "run_bash", handler)
+    create_process = AsyncMock()
+    monkeypatch.setattr("asyncio.create_subprocess_exec", create_process)
+    events: list[Any] = []
+    original_render = cli.render_event
+
+    def render(event: Any, **kwargs: Any) -> None:
+        events.append(event)
+        original_render(event, **kwargs)
+
+    monkeypatch.setattr(cli, "render_event", render)
+
+    result = runner.invoke(app, ["-p", "检查当前目录"])
+
+    assert result.exit_code == 1
+    assert result.stdout.count("执行环境配置错误") == 1
+    assert result.stdout.count(expected_field) == 1
+    assert [event.type.value for event in events] == ["error"]
+    constructor.assert_not_called()
+    request.assert_not_awaited()
+    handler.assert_not_awaited()
+    create_process.assert_not_awaited()
