@@ -11,7 +11,7 @@ from code_agent import __version__
 from code_agent.config import Settings, load_settings
 from code_agent.core.agent import create_agent
 from code_agent.events import ErrorEvent
-from code_agent.ui.render import render_event
+from code_agent.ui.render import EventRenderer
 
 app = typer.Typer(add_completion=False, help="code_agent —— 学习型编程 Agent")
 console = Console()
@@ -41,17 +41,17 @@ def ask(
 
 async def _run_once(prompt: str, settings: Settings) -> int:
     """执行一次 Agent 任务并显示运行事件,返回进程退出码。"""
+    renderer = EventRenderer(console=console)
     try:
         agent = create_agent(settings)
     except ValueError as exc:
-        render_event(
+        renderer.render_event(
             ErrorEvent(message=f"执行环境配置错误：{exc}"),
-            console=console,
         )
         return 1
 
     try:
-        await agent.run(prompt, on_event=lambda event: render_event(event, console=console))
+        await agent.run(prompt, on_event=lambda event: renderer.render_event(event))
     except Exception:
         return 1
 

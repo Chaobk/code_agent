@@ -110,33 +110,49 @@ def _print_value(value: Any, console: Console) -> None:
         console.print(Syntax(json.dumps(value, ensure_ascii=False, indent=2), "json"))
 
 
-def render_event(event: AnyEvent, *, console: Console | None = None) -> None:
-    """将运行事件输出到终端。"""
-    console = console if console is not None else Console()
+class EventRenderer:
+    def __init__(self, *, console: Console | None = None) -> None:
+        self.console = console if console is not None else Console()
+        self._text_open = False
 
-    if isinstance(event, TextDelta):
-        console.print(
-            Text(event.text),
-            end="",
-            soft_wrap=True,
-        )
-    elif isinstance(event, ToolCallEvent):
-        console.print()
-        call = event.tool_call
-        console.print(Text(f"工具调用：{call.name} | ID: {call.id}"))
-        console.print(Text(call.arguments))
-    elif isinstance(event, ToolResultEvent):
-        console.print()
-        res = event.tool_result
-        console.print(Text(f"工具执行结果 | Id: {event.tool_call_id}"))
-        console.print(Text(f"状态： {res.status.value} | 截断： {'是' if res.truncated else '否'}"))
-        _print_value(res.output, console)
-    elif isinstance(event, RunFinished):
-        console.print()
-        if event.reason == "cancelled":
-            console.print(Text("运行已取消", style="yellow"))
-    elif isinstance(event, ErrorEvent):
-        console.print()
-        console.print(Text(event.message), style="red")
+    def _end_text(self) -> None:
+        if self._text_open:
+            self.console.print()
+            self._text_open = False
 
-    pass
+    def render_event(self, event: AnyEvent) -> None:
+        if isinstance(event, TextDelta):
+            if not event.text:
+                return
+
+            if not self._text_open:
+                self.console.print(
+                    Text("助手： ", style="bold green"),
+                    end="",
+                )
+                self._text_open = True
+            self.console.print(
+                Text(event.text),
+                end="",
+                soft_wrap=True,
+            )
+        elif isinstance(event, ToolCallEvent):
+            self._end_text()
+            call = event.tool_call
+            self.console.print(Text(f"工具调用：{call.name} | ID: {call.id}"))
+            self.console.print(Text(call.arguments))
+        elif isinstance(event, ToolResultEvent):
+            self._end_text()
+            res = event.tool_result
+            self.console.print(Text(f"工具执行结果 | Id: {event.tool_call_id}"))
+            self.console.print(
+                Text(f"状态： {res.status.value} | 截断： {'是' if res.truncated else '否'}")
+            )
+            _print_value(res.output, self.console)
+        elif isinstance(event, RunFinished):
+            self._end_text()
+            if event.reason == "cancelled":
+                self.console.print(Text("运行已取消", style="yellow"))
+        elif isinstance(event, ErrorEvent):
+            self._end_text()
+            self.console.print(Text(event.message), style="red")

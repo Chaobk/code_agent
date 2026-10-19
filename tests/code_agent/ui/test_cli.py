@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 from code_agent import __version__
 from code_agent.config import Settings
 from code_agent.core import agent as agent_module
-from code_agent.events import ToolResult, ToolStatus
+from code_agent.events import AnyEvent, ToolResult, ToolStatus
 from code_agent.llm import client as client_module
 from code_agent.tools import builtin as builtin_module
 from code_agent.ui import cli
@@ -156,15 +156,19 @@ def test_prompt_runs_bash_through_agent_and_displays_history(
 def test_prompt_displays_final_answer_without_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None, DEEPSEEK_API_KEY="test-key")
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
-    response = text_response("你好[bold]")
-    request = AsyncMock(return_value=response)
+
+    async def response() -> AsyncIterator[ModelResponseStream]:
+        yield ModelResponseStream(choices=[{"delta": {"content": "你好"}}])
+        yield ModelResponseStream(choices=[{"delta": {"content": "[bold]"}}])
+        yield ModelResponseStream(choices=[{"delta": {}, "finish_reason": "stop"}])
+
+    request = AsyncMock(return_value=response())
     monkeypatch.setattr(client_module.litellm, "acompletion", request)
 
     result = runner.invoke(app, ["-p", "你好"])
 
     assert result.exit_code == 0
-    assert result.stdout.count("你好[bold]") == 1
-    assert result.stdout.endswith("你好[bold]\n")
+    assert result.stdout == "助手： 你好[bold]\n"
     assert "END_TASK" not in result.stdout
     assert "命令解释器：Bash" not in result.stdout
     request.assert_awaited_once()
@@ -308,14 +312,14 @@ def test_prompt_reports_invalid_execution_environment_once(
     monkeypatch.setattr(builtin_module, "run_bash", handler)
     create_process = AsyncMock()
     monkeypatch.setattr("asyncio.create_subprocess_exec", create_process)
-    events: list[Any] = []
-    original_render = cli.render_event
+    events: list[AnyEvent] = []
+    original_render = cli.EventRenderer.render_event
 
-    def render(event: Any, **kwargs: Any) -> None:
+    def render(self: cli.EventRenderer, event: AnyEvent) -> None:
         events.append(event)
-        original_render(event, **kwargs)
+        original_render(self, event)
 
-    monkeypatch.setattr(cli, "render_event", render)
+    monkeypatch.setattr(cli.EventRenderer, "render_event", render)
 
     result = runner.invoke(app, ["-p", "检查当前目录"])
 
