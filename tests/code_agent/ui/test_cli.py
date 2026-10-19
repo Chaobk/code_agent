@@ -81,7 +81,7 @@ def block_model_requests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 def test_version_flag_prints_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert __version__ in result.stdout
+    assert result.stdout.strip() == f"codeagent {__version__}"
 
 
 def test_missing_prompt_exits_nonzero() -> None:

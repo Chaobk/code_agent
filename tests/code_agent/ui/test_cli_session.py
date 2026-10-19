@@ -50,7 +50,7 @@ def test_nonterminal_without_prompt_rejects_before_loading_settings(
     result = runner.invoke(cli.app, [], input="不应被读取的任务\n")
 
     assert result.exit_code == 1
-    assert "-p" in result.stdout
+    assert 'codeagent -p "你的任务"' in result.stdout
     load.assert_not_called()
     once.assert_not_awaited()
     interactive.assert_not_awaited()

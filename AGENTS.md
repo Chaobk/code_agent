@@ -18,8 +18,8 @@
 
 - `uv sync`：安装运行与开发依赖。
 - `Copy-Item .env.example .env`：在 PowerShell 中创建本地配置，然后填入 API 密钥。
-- `uv run code-agent --version`：验证命令行入口。
-- `uv run code-agent -p "你好"`：手动验证 Agent 单次响应，需要模型服务凭据；流式 Agent 路径在 M2b 接入。
+- `uv run codeagent --version`：验证命令行入口。
+- `uv run codeagent -p "你好"`：手动验证 Agent 单次响应，需要模型服务凭据；流式 Agent 路径在 M2b 接入。
 - `uv run pytest`：运行测试集。
 - `uv run ruff check .`：检查代码规范；`uv run ruff format .`：格式化 Python 文件。
 - `uv build`：使用 Hatchling 构建分发包。

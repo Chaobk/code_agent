@@ -22,7 +22,7 @@ console = Console()
 def _echo_version(value: bool) -> None:
     """输出版本号，在其他参数校验前执行。"""
     if value:
-        console.print(f"code-agent {__version__}")
+        console.print(f"codeagent {__version__}")
         raise typer.Exit()
 
 
@@ -36,7 +36,7 @@ def ask(
     """选择单次任务或终端会话，并显示运行事件。"""
     if prompt is None:
         if not _stdin_is_terminal():
-            console.print('请使用code-agent -p "你的任务"')
+            console.print('请使用codeagent -p "你的任务"')
             raise typer.Exit(code=1)
 
         settings = load_settings()

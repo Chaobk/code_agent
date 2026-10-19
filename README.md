@@ -34,8 +34,8 @@
 ```bash
 uv sync
 cp .env.example .env   # 填入 DEEPSEEK_API_KEY
-uv run code-agent --version
-uv run code-agent -p "你好"
+uv run codeagent --version
+uv run codeagent -p "你好"
 ```
 
 Agent 示例入口从 Settings 读取执行环境,可在 `.env` 中设置:
