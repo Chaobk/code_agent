@@ -2,6 +2,19 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-19 M4a 真实终端多轮会话与独立复核
+
+- 用户指定 `C:/Users/1004945427/Desktop/pros/code_agent_target`，并明确授权将本次任务、靶子代码、测试、文档、命令输出与本地路径发送到当前 DeepSeek 服务。应用提交为 `6e3cc34`，模型 deepseek/deepseek-chat，max_steps=12，request_timeout_seconds=60。
+- 原靶子留有先前修复；先备份原文件、diff 与固定材料哈希，仅将 math_utils.py 恢复到 m1-baseline。独立初始 pytest 为 4 项通过、1 项失败，退出码 1，失败为 average([]) 的 ZeroDivisionError。
+- 在真实终端执行 `uv run codeagent`，未提供 -p；安装后入口 argv 为 codeagent.exe，stdin.isatty() 为 true。观察钩子只记录并转发原有调用，不替换输入或模型；没有修改应用源码。
+- 实际输入空白、修复任务、后续追问、/exit。全程只创建一个 Agent，两次运行共 6 次模型请求（5 + 1）；7 次 Bash 调用与 7 个观察按 ID 各配对一次，最终无 pending calls。空白和退出不触发额外请求；两次运行正常结束，进程退出码 0。
+- 第二次请求在第一次运行完整历史后追加本次用户输入，系统指令只出现一次。后续追问未重复此前的验收标记，模型没有调用工具，正确复述标记、修复内容及测试结果；末尾标记在终端记录中仅显示一次。
+- 退出后独立 pytest：5 项通过，退出码 0；git diff --check 通过，仅 math_utils.py 修改，其他固定材料 SHA-256 均不变，没有新增未跟踪文件。保留靶子修复供用户检查，未提交或推送。
+- 模型红测命令通过 echo 输出 EXIT_CODE=1，该 Bash 调用本身退出 0；独立测试直接捕获 pytest 退出码 1 → 0，不以工具 completed 或 CLI 退出码代替任务判据。
+- 原始材料位于 `artifacts/m4a-session-20261019-run-001/`：原有修改备份、两条输入、初始/最终独立测试、console.txt、audit.jsonl、final-history.json、最终 diff、verification.json 和 report.md。16 项独立证据检查通过；临时观察不等同于 M5 轨迹功能。
+- 本次文档提交前重新执行完整 `uv run pytest -q`：291 项通过，1 条既有 Pydantic ReadOnly 依赖警告；Ruff 规则检查与 git diff --check 通过。上述 5 项靶子测试与此处项目完整回归分别统计。
+- 本次正常路径的真实会话外部复核通过，M4a 等待用户确认；没有测试失败、耗尽或 Ctrl+C 后继续，也不因此确认 M3 或进入 M4b/M4c。
+
 ## 2026-10-18 调整顺序：先多轮会话，再权限与审批
 
 - 用户指出当前 CLI 只有 -p 单次入口，没有审批输入通道，要求先建立多轮会话。单次任务在技术上也可增加审批回调，但按当前学习目标，先完成持续交互更合适。
