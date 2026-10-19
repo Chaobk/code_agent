@@ -44,9 +44,12 @@ async def run_session(
         if stripped == "/exit":
             return 0
 
-        await agent.run(
-            prompt,
-            on_event=renderer.render_event,
-        )
+        try:
+            await agent.run(
+                prompt,
+                on_event=renderer.render_event,
+            )
+        except Exception:
+            continue
 
     return 0
