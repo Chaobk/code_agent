@@ -9,11 +9,11 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from litellm import APIConnectionError
 from litellm.types.utils import ModelResponseStream
 from rich.console import Console
 
 from code_agent.core.agent import Agent
-from code_agent.events import RunFinished
 from code_agent.tools.registry import ToolRegistry
 from code_agent.ui import repl
 
@@ -60,7 +60,9 @@ async def test_failure_then_next_input_preserves_only_committed_history(
     broken: list[ModelResponseStream | BaseException] = (
         [_chunk(content="UNCOMMITTED")] if partial else []
     )
-    broken.append(RuntimeError("STREAM_FAILED"))
+    broken.append(
+        APIConnectionError(message="STREAM_FAILED", model="test", llm_provider="deepseek")
+    )
     client = ScriptedLLM(
         [
             [_chunk(content="PREVIOUS", finish_reason="stop")],
@@ -138,7 +140,7 @@ async def test_external_cancellation_is_not_swallowed() -> None:
     assert reader.call_count == 1
 
 
-async def test_previous_cancelled_event_does_not_authorize_next_cancellation(
+async def test_previous_user_cancel_does_not_swallow_later_external_cancellation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     previous_handler = object()
@@ -149,23 +151,23 @@ async def test_previous_cancelled_event_does_not_authorize_next_cancellation(
 
     async def run(prompt: str, *, on_event: Any) -> str:
         handler = install_handler.call_args_list[0].args[1]
-        asyncio.get_running_loop().call_soon(handler, repl.signal.SIGINT, None)
+        if prompt == "first":
+            asyncio.get_running_loop().call_soon(handler, repl.signal.SIGINT, None)
+        else:
+            asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
-            if prompt == "first":
-                on_event(RunFinished(reason="cancelled"))
             raise
 
     agent.run = AsyncMock(side_effect=run)
     with monkeypatch.context() as patcher:
         patcher.setattr(repl.signal, "signal", install_handler)
-        result = await repl.run_session(
-            agent, read_input=reader, console=Console(file=output, width=200)
-        )
-
-    assert result == 1
+        with pytest.raises(asyncio.CancelledError):
+            await repl.run_session(
+                agent, read_input=reader, console=Console(file=output, width=200)
+            )
     assert reader.call_count == 2
     assert agent.run.await_count == 2
-    assert output.getvalue().count("未收到正常的取消结束事件") == 1
+    assert output.getvalue().count("运行已取消") == 1
     install_handler.assert_called_with(repl.signal.SIGINT, previous_handler)

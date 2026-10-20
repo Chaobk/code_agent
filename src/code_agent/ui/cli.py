@@ -11,7 +11,6 @@ from rich.console import Console
 from code_agent import __version__
 from code_agent.config import Settings, load_settings
 from code_agent.core.agent import create_agent
-from code_agent.events import ErrorEvent
 from code_agent.ui import repl
 from code_agent.ui.render import EventRenderer
 
@@ -39,15 +38,20 @@ def ask(
             console.print('请使用codeagent -p "你的任务"')
             raise typer.Exit(code=1)
 
-        settings = load_settings()
-        raise typer.Exit(code=asyncio.run(_run_interactive(settings)))
-
-    if not prompt.strip():
+    elif not prompt.strip():
         console.print("任务内容不能为空")
         raise typer.Exit(code=1)
 
     settings = load_settings()
-    raise typer.Exit(code=asyncio.run(_run_once(prompt, settings)))
+    try:
+        if prompt is None:
+            code = asyncio.run(_run_interactive(settings))
+        else:
+            code = asyncio.run(_run_once(prompt, settings))
+    except KeyboardInterrupt:
+        console.print("运行已取消")
+        code = 130
+    raise typer.Exit(code=code)
 
 
 async def _run_once(prompt: str, settings: Settings) -> int:
@@ -56,17 +60,17 @@ async def _run_once(prompt: str, settings: Settings) -> int:
     try:
         agent = create_agent(settings)
     except ValueError as exc:
-        renderer.render_event(
-            ErrorEvent(message=f"执行环境配置错误：{exc}"),
-        )
+        renderer.render_error(f"执行环境配置错误：{exc}")
         return 1
 
     try:
-        await agent.run(prompt, on_event=lambda event: renderer.render_event(event))
-    except Exception:
+        result = await agent.run(prompt, on_event=renderer.render_event)
+        renderer.render_result(result)
+    except Exception as exc:
+        renderer.render_error(f"{type(exc).__name__}: {exc}")
         return 1
 
-    return 0
+    return 0 if result.status == "completed" else 1
 
 
 def _stdin_is_terminal() -> bool:
@@ -81,7 +85,7 @@ async def _run_interactive(settings: Settings) -> int:
     try:
         agent = create_agent(settings)
     except ValueError as exc:
-        renderer.render_event(ErrorEvent(message=f"执行环境配置错误：{exc}"))
+        renderer.render_error(f"执行环境配置错误：{exc}")
         return 1
 
     return await repl.run_session(agent, console=console)

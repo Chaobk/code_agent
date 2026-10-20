@@ -8,8 +8,7 @@ from rich.console import Console
 
 from code_agent.events import (
     AnyEvent,
-    ErrorEvent,
-    RunFinished,
+    RunResult,
     TextDelta,
     ToolCall,
     ToolCallEvent,
@@ -20,7 +19,7 @@ from code_agent.events import (
 from code_agent.ui.render import EventRenderer, print_history
 
 
-@pytest.mark.parametrize("reason", ["error", "max_steps"])
+@pytest.mark.parametrize("reason", ["failed", "max_steps"])
 def test_render_failure_separates_partial_text_and_shows_error_once(reason: str) -> None:
     output = StringIO()
     console = Console(file=output, width=100, color_system=None)
@@ -28,8 +27,7 @@ def test_render_failure_separates_partial_text_and_shows_error_once(reason: str)
     message = "RuntimeError: 失败[bold]\n下一行"
 
     renderer.render_event(TextDelta(text="部分正文"))
-    renderer.render_event(ErrorEvent(message=message))
-    renderer.render_event(RunFinished(reason=reason))
+    renderer.render_result(RunResult(status=reason, error=message))
 
     text = output.getvalue()
     assert text == f"助手： 部分正文\n{message}\n"
@@ -43,7 +41,7 @@ def test_render_cancelled_separates_partial_text_and_shows_cancellation_once() -
     renderer = EventRenderer(console=console)
 
     renderer.render_event(TextDelta(text="部分正文[bold]"))
-    renderer.render_event(RunFinished(reason="cancelled"))
+    renderer.render_cancelled()
 
     assert output.getvalue() == "助手： 部分正文[bold]\n运行已取消\n"
 
@@ -55,7 +53,7 @@ def test_render_completed_only_terminates_final_text_line(answer: str) -> None:
     renderer = EventRenderer(console=console)
 
     renderer.render_event(TextDelta(text=answer))
-    renderer.render_event(RunFinished(reason="completed"))
+    renderer.render_result(RunResult(status="completed", text="不应重放"))
 
     assert output.getvalue() == (f"助手： {answer}\n" if answer else "")
 
@@ -82,13 +80,8 @@ def test_render_text_preserves_whitespace_and_ignores_empty_chunks() -> None:
             tool_call_id="call_1",
             tool_result=ToolResult(output="观察", status=ToolStatus.COMPLETED),
         ),
-        ErrorEvent(message="失败"),
-        RunFinished(reason="completed"),
-        RunFinished(reason="cancelled"),
-        RunFinished(reason="error"),
-        RunFinished(reason="max_steps"),
     ],
-    ids=["call", "result", "error", "completed", "cancelled", "failed", "max-steps"],
+    ids=["call", "result"],
 )
 def test_render_boundary_closes_text_and_next_text_gets_new_label(boundary: AnyEvent) -> None:
     output = StringIO()
@@ -98,7 +91,7 @@ def test_render_boundary_closes_text_and_next_text_gets_new_label(boundary: AnyE
     renderer.render_event(boundary)
     renderer.render_event(TextDelta(text="第二段"))
     renderer.render_event(TextDelta(text="后续"))
-    renderer.render_event(RunFinished(reason="completed"))
+    renderer.render_result(RunResult(status="completed", text="不应重放"))
 
     text = output.getvalue()
     assert text.startswith("助手： 第一段\n")

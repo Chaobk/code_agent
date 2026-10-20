@@ -3,6 +3,8 @@
 状态：用户已完成会话循环与 CLI 接线，相关自动化验证及真实会话外部复核通过，待用户确认阶段验收。阶段范围与验收以
 [PLAN.md](../../PLAN.md) 为准；本文不表示 M3 或 M4a 已验收。
 
+> 2026-10-20 接口更新：Agent.run 返回 RunResult，UI 在 await 结束后显示结束原因；事件仅承载进度。下文保留初始练习，当前契约以 [运行流程](run-flow.md) 为准。
+
 ## 先理解生命周期
 
 读 `Agent.__init__`、`Agent.run` 和 `ConversationHistory`，解释三个问题：

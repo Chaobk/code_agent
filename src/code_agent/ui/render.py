@@ -11,8 +11,7 @@ from rich.text import Text
 
 from code_agent.events import (
     AnyEvent,
-    ErrorEvent,
-    RunFinished,
+    RunResult,
     TextDelta,
     ToolCallEvent,
     ToolResult,
@@ -149,10 +148,17 @@ class EventRenderer:
                 Text(f"状态： {res.status.value} | 截断： {'是' if res.truncated else '否'}")
             )
             _print_value(res.output, self.console)
-        elif isinstance(event, RunFinished):
-            self._end_text()
-            if event.reason == "cancelled":
-                self.console.print(Text("运行已取消", style="yellow"))
-        elif isinstance(event, ErrorEvent):
-            self._end_text()
-            self.console.print(Text(event.message), style="red")
+
+    def render_result(self, result: RunResult) -> None:
+        """结束流式正文并显示失败原因，不重放最终正文。"""
+        self._end_text()
+        if result.error:
+            self.render_error(result.error)
+
+    def render_cancelled(self) -> None:
+        self._end_text()
+        self.console.print(Text("运行已取消", style="yellow"))
+
+    def render_error(self, message: str) -> None:
+        self._end_text()
+        self.console.print(Text(message), style="red")

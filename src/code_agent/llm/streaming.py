@@ -6,6 +6,10 @@ from typing import Any
 from litellm.types.utils import ChatCompletionDeltaToolCall, ModelResponseStream
 
 
+class ModelProtocolError(RuntimeError):
+    """模型流的结构或结束状态不满足响应协议。"""
+
+
 @dataclass
 class AssembledTurn:
     """组装后的助手消息及结束原因。"""
@@ -31,7 +35,7 @@ class TurnAssembler:
         fragments = choice.delta.tool_calls or []
 
         if self._finish_reason is not None and (text or fragments):
-            raise RuntimeError("响应结束后仍收到新增内容")
+            raise ModelProtocolError("响应结束后仍收到新增内容")
 
         if text:
             self._text_parts.append(text)
@@ -60,7 +64,7 @@ class TurnAssembler:
                 cached[field] = value
 
         if cached["type"] not in (None, "function"):
-            raise RuntimeError("工具调用类型无效")
+            raise ModelProtocolError("工具调用类型无效")
 
         function = fragment.function
         if function is None:
@@ -70,16 +74,16 @@ class TurnAssembler:
         saved_name = cached["function"]["name"]
         if name is not None:
             if saved_name is not None and saved_name != name:
-                raise RuntimeError("同一工具调用的名称冲突")
+                raise ModelProtocolError("同一工具调用的名称冲突")
             cached["function"]["name"] = name
 
         cached["function"]["arguments"] += function.arguments or ""
 
     def finish(self) -> AssembledTurn:
         if self._finish_reason is None:
-            raise RuntimeError("流式响应缺少结束原因")
+            raise ModelProtocolError("流式响应缺少结束原因")
         if self._finish_reason not in ("stop", "tool_calls"):
-            raise RuntimeError(f"模型未正常结束: {self._finish_reason}")
+            raise ModelProtocolError(f"模型未正常结束: {self._finish_reason}")
 
         tool_calls: list[dict[str, Any]] = []
 
@@ -90,12 +94,12 @@ class TurnAssembler:
             name = function["name"]
 
             if not isinstance(call_id, str) or not call_id.strip():
-                raise RuntimeError(f"工具调用 index={index} 缺少有效 ID")
+                raise ModelProtocolError(f"工具调用 index={index} 缺少有效 ID")
 
             if cached["type"] != "function":
-                raise RuntimeError(f"工具调用 index={index} 的类型无效")
+                raise ModelProtocolError(f"工具调用 index={index} 的类型无效")
             if not isinstance(name, str) or not name.strip():
-                raise RuntimeError(f"工具调用 index={index} 缺少有效名称")
+                raise ModelProtocolError(f"工具调用 index={index} 缺少有效名称")
 
             tool_calls.append(
                 {
@@ -108,7 +112,7 @@ class TurnAssembler:
                 }
             )
         if self._finish_reason == "tool_calls" and not tool_calls:
-            raise RuntimeError("模型报告工具调用，但没有返回调用信息")
+            raise ModelProtocolError("模型报告工具调用，但没有返回调用信息")
 
         message: dict[str, Any] = {
             "role": "assistant",

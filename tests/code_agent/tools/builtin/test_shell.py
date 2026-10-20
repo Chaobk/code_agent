@@ -5,6 +5,7 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import psutil
@@ -282,6 +283,108 @@ async def test_run_bash_drains_output_during_cleanup(
     process.wait.assert_awaited_once()
 
 
+async def test_run_bash_cleanup_failure_stops_and_reclaims_output_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """清理失败传播故障和原取消，并确保读取任务结束。"""
+    process = SimpleNamespace(pid=4321, returncode=None)
+    tracked = Mock()
+    started = asyncio.Event()
+    output_closed = asyncio.Event()
+    readers: list[asyncio.Task[Any]] = []
+
+    async def collect(process: Any) -> tuple[str, str, bool]:
+        reader = asyncio.current_task()
+        assert reader is not None
+        readers.append(reader)
+        started.set()
+        await output_closed.wait()
+        return "partial", "", False
+
+    async def stop(*args: object) -> None:
+        raise RuntimeError("CLEANUP_FAILED")
+
+    cleanup = AsyncMock(side_effect=stop)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+    monkeypatch.setattr(psutil, "Process", Mock(return_value=tracked))
+    monkeypatch.setattr(shell_module, "collect_output", collect)
+    monkeypatch.setattr(shell_module, "stop_process_tree", cleanup)
+    monkeypatch.setattr(shell_module, "PROCESS_CLEANUP_TIMEOUT_SECONDS", 0.05)
+    task = asyncio.create_task(run_bash("long-command", workspace_dir=Path.cwd()))
+
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(RuntimeError, match="CLEANUP_FAILED") as caught:
+            await asyncio.wait_for(task, timeout=2)
+        assert isinstance(caught.value.__context__, asyncio.CancelledError)
+        assert all(reader.done() for reader in readers)
+    finally:
+        # 即使被测实现异常退出，也回收模拟输出读取任务。
+        output_closed.set()
+        task.cancel()
+        await asyncio.gather(task, *readers, return_exceptions=True)
+
+    cleanup.assert_awaited_once_with(process, tracked)
+
+
+@pytest.mark.parametrize("failure", ["identity", "reader", "output-timeout"])
+async def test_run_bash_reclaims_resources_on_internal_failure(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    started = asyncio.Event()
+    read_done = asyncio.Event()
+    release = asyncio.Event()
+    process = SimpleNamespace(pid=4321, returncode=None, kill=Mock(), wait=AsyncMock())
+    identity_error = psutil.AccessDenied(4321)
+    reader_error = RuntimeError("READ_FAILED")
+
+    async def collect(process: Any) -> tuple[str, str, bool]:
+        try:
+            started.set()
+            if failure == "reader":
+                raise reader_error
+            if failure == "output-timeout":
+                await release.wait()
+            return "", "", False
+        finally:
+            read_done.set()
+
+    async def stop(*args: object) -> None:
+        process.returncode = -15
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+    monkeypatch.setattr(shell_module, "collect_output", collect)
+    monkeypatch.setattr(shell_module, "PROCESS_CLEANUP_TIMEOUT_SECONDS", 0.1)
+    tracked = Mock(side_effect=identity_error) if failure == "identity" else Mock()
+    monkeypatch.setattr(psutil, "Process", tracked)
+    if failure != "identity":
+        monkeypatch.setattr(shell_module, "stop_process_tree", AsyncMock(side_effect=stop))
+
+    task = asyncio.create_task(run_bash("long-command", workspace_dir=Path.cwd()))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if failure == "output-timeout":
+            task.cancel()
+        expected = psutil.AccessDenied if failure == "identity" else RuntimeError
+        with pytest.raises(expected) as caught:
+            await asyncio.wait_for(task, timeout=2)
+        assert read_done.is_set()
+        if failure == "identity":
+            assert caught.value is identity_error
+            process.kill.assert_called_once_with()
+            process.wait.assert_awaited_once()
+        elif failure == "reader":
+            assert caught.value is reader_error
+        else:
+            assert "输出读取收尾超时" in str(caught.value)
+            assert isinstance(caught.value.__context__, asyncio.CancelledError)
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_collect_output_drains_large_real_process_output(tmp_path: Path) -> None:
     code = "import os; [(os.write(1, b'o' * 200000), os.write(2, b'e' * 200000)) for _ in range(3)]"
     process = await asyncio.create_subprocess_exec(
@@ -394,7 +497,7 @@ async def test_stop_process_tree_limits_asyncio_reaping(monkeypatch: pytest.Monk
     async def never_finishes() -> None:
         await asyncio.Future()
 
-    process = SimpleNamespace(pid=4321, wait=never_finishes)
+    process = SimpleNamespace(pid=4321, returncode=None, kill=Mock(), wait=never_finishes)
     with pytest.raises(RuntimeError, match="回收超时"):
         await shell_module.stop_process_tree(process, None)
 

@@ -3,6 +3,7 @@
 import asyncio
 import codecs
 import os
+from contextlib import suppress
 from pathlib import Path
 
 import psutil
@@ -73,31 +74,27 @@ async def run_bash(
             output={"stdout": "", "stderr": f"{type(e).__name__}: {e}", "exit_code": None},
             status=ToolStatus.ERROR,
         )
-    # 启动时记录 PID 与创建时间,清理时复用同一个 psutil.Process。
+    tracked_process = None
+    output_task = None
     try:
-        tracked_process = psutil.Process(process.pid)
-    except psutil.NoSuchProcess:
-        tracked_process = None
-
-    output_task = asyncio.create_task(collect_output(process))
-    try:
-        stdout, stderr, truncated = await asyncio.wait_for(
+        # 从进程启动后即拥有资源；身份查询失败也必须回收直接子进程。
+        output_task = asyncio.create_task(collect_output(process))
+        with suppress(psutil.NoSuchProcess):
+            tracked_process = psutil.Process(process.pid)
+        await asyncio.wait_for(
             asyncio.shield(output_task),
             timeout=timeout_seconds,
         )
         status = ToolStatus.COMPLETED
         exit_code = process.returncode
-
     except TimeoutError:
-        await stop_process_tree(process, tracked_process)
-        stdout, stderr, truncated = await output_task
         status = ToolStatus.TIMED_OUT
         exit_code = None
+    finally:
+        output = await _cleanup_execution(process, tracked_process, output_task)
 
-    except asyncio.CancelledError:
-        await stop_process_tree(process, tracked_process)
-        await output_task
-        raise
+    assert output is not None
+    stdout, stderr, truncated = output
 
     return ToolResult(
         output={
@@ -151,6 +148,42 @@ async def collect_output(process: asyncio.subprocess.Process) -> tuple[str, str,
 PROCESS_CLEANUP_TIMEOUT_SECONDS = 2.0
 
 
+async def _cleanup_execution(
+    process: asyncio.subprocess.Process,
+    tracked_process: psutil.Process | None,
+    output_task: asyncio.Task[tuple[str, str, bool]] | None,
+) -> tuple[str, str, bool] | None:
+    """回收进程及读取任务，首个收尾故障向外传播，其他故障附在诊断中。"""
+    error: Exception | None = None
+    output = None
+    try:
+        if process.returncode is None or (output_task is not None and not output_task.done()):
+            await stop_process_tree(process, tracked_process)
+    except Exception as exc:
+        error = exc
+
+    if output_task is not None:
+        try:
+            output = await asyncio.wait_for(
+                asyncio.shield(output_task), timeout=PROCESS_CLEANUP_TIMEOUT_SECONDS
+            )
+        except Exception as exc:
+            if isinstance(exc, TimeoutError):
+                exc = RuntimeError("等待 Bash 输出读取收尾超时")
+            if error is None:
+                error = exc
+            else:
+                error.add_note(f"输出回收也失败：{type(exc).__name__}: {exc}")
+        finally:
+            if not output_task.done():
+                output_task.cancel()
+                await asyncio.gather(output_task, return_exceptions=True)
+
+    if error is not None:
+        raise error
+    return output
+
+
 async def stop_process_tree(
     process: asyncio.subprocess.Process,
     tracked_process: psutil.Process | None,
@@ -165,6 +198,10 @@ async def stop_process_tree(
         if tracked_process.pid != process.pid or tracked_process.pid == os.getpid():
             raise ValueError("清理目标必须是本次启动的子进程")
         await asyncio.to_thread(_stop_tracked_process_tree, tracked_process)
+    elif process.returncode is None:
+        # 只使用本次启动的子进程句柄，不按名称或未经核实的 PID 清理。
+        with suppress(ProcessLookupError):
+            process.kill()
 
     try:
         await asyncio.wait_for(process.wait(), timeout=PROCESS_CLEANUP_TIMEOUT_SECONDS)

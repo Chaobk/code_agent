@@ -12,7 +12,7 @@ from litellm.types.utils import ModelResponseStream
 from rich.console import Console
 
 from code_agent.core.agent import Agent
-from code_agent.events import RunFinished, TextDelta
+from code_agent.events import RunResult, TextDelta
 from code_agent.tools.registry import ToolRegistry
 from code_agent.ui import repl
 
@@ -32,7 +32,7 @@ async def test_exit_does_not_run_agent(inputs: list[Any]) -> None:
 
 async def test_blank_input_is_skipped_and_valid_input_is_preserved() -> None:
     agent = Mock(spec=Agent)
-    agent.run = AsyncMock(return_value="完成")
+    agent.run = AsyncMock(return_value=RunResult(status="completed", text="完成"))
     read_input = Mock(side_effect=["", " \t ", "  保留输入空白  ", EOFError()])
 
     result = await repl.run_session(agent, read_input=read_input, console=Console(file=StringIO()))
@@ -49,8 +49,8 @@ async def test_events_render_once_to_supplied_console() -> None:
 
     async def run(prompt: str, *, on_event: Any) -> str:
         on_event(TextDelta(text="回复[bold]"))
-        on_event(RunFinished(reason="completed"))
-        return "回复[bold]"
+
+        return RunResult(status="completed", text="回复[bold]")
 
     agent.run = AsyncMock(side_effect=run)
 
@@ -69,7 +69,7 @@ async def test_default_input_is_resolved_when_session_starts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = Mock(spec=Agent)
-    agent.run = AsyncMock(return_value="完成")
+    agent.run = AsyncMock(return_value=RunResult(status="completed", text="完成"))
     read_input = Mock(side_effect=["默认输入", "/exit"])
     monkeypatch.setattr("builtins.input", read_input)
 

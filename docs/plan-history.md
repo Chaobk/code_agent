@@ -2,6 +2,19 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-20 执行链重构、完整回归与真实 TTY 实验
+
+- 用户确认“直接循环、明确结果、集中收尾”的方案，随后明确授权本次由 Codex 完成全部重构，供用户阅读代码；后续默认手写分工保留。
+- `Agent.run` 直接返回不可变 `RunResult(completed/failed/max_steps)`；核心只发送正文、工具调用、工具结果三类进度事件，删除旧终态事件和未使用的事件占位。`ModelProtocolError` 与已知 LiteLLM 异常在模型边界转成受控失败，显示故障与内部错误继续传播。
+- 核心用唯一 `finally` 结清当前批次，保留确定观察、补齐 unknown/not_started；收尾只写历史，不重试显示回调。Registry 移除 handler 宽捕获；文件操作的预期失败由文件工具返回结果。
+- Bash 将身份查询、输出读取及等待纳入资源保护；统一进程和读取任务收尾，输出回收限时 2 秒。清理失败仍回收读取任务并传播故障，原取消保留在异常上下文中。无法取得 psutil 身份时只回收本次直接子进程。
+- REPL 删除 finished_reason、run_started 和渲染回写控制流程，依据等待结果处理继续、取消和致命错误；单次入口将 Ctrl+C 映射为 130。
+- 最终完整回归：`.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp=artifacts/run-flow-refactor-20261020/pytest-final --tb=short`，**317 项通过**，1 条既有 Pydantic ReadOnly 依赖警告。Ruff 规则、源码及测试格式、`git diff --check` 通过。Windows 沙箱临时目录权限受限，完整回归使用项目独立目录在沙箱外运行；未访问真实模型服务。
+- 新增/迁移的测试覆盖受控结果、内部工具失败、显示器抛 SDK 同类型异常、模型流关闭、取消批次配对、清理失败、身份查询失败、输出读取失败及输出回收超时。清理失败后剩余工具和额外模型请求均为零；取消补充观察不再要求发送显示事件。
+- 真实终端使用 `tty=true`，确认 stdin.isatty() 为 true，经过实际 CLI 与 REPL；模型脚本化，Bash 为本机 Git Bash。输入中 Ctrl+C 丢弃当前行，模型流和 Bash 执行中 Ctrl+C 后继续提问，最终 `/exit`。历史用户输入仅为 stream、bash、after；模型请求共 3 次，工具观察为 unknown，pending 为空；Bash Python 子进程 PID 6112 在应用结束时已不存在。单次入口中断捕获应用 SystemExit=130，会话捕获 SystemExit=0。
+- 原始材料：`artifacts/run-flow-refactor-20261020/terminal_smoke.py`、`terminal-interactive/console.txt`、`terminal-interactive/report.json`、`terminal-once/report.json` 与 `terminal-verification.json`。11 项独立记录检查通过。TTY 的 PowerShell 宿主在 Ctrl+C 后报告退出码 1，故单独记录应用捕获的退出码，不把宿主退出码当作 CLI 退出码；单元 CLI 测试同时验证 130。第一次沙箱内 Bash 启动被拒绝，成功实验为沙箱外重跑。
+- 运行说明和阅读顺序见 [执行流程](design/run-flow.md)，README、架构、M4a/M4b 设计与 PLAN 的有效契约已同步。本次提交保存实现、回归结果和终端证据摘要；M4b 仍待用户验收确认，不进入 M4c。
+
 ## 2026-10-20 M4b 终端取消接线与阶段性保存
 
 - 用户手写 `ui/repl.py`：输入时 Ctrl+C 丢弃当前行；运行时只请求取消当前 Task 一次，等待其结束后再接受输入；正常返回以实际结果为准。每次运行重置取消意图、启动标记和结束类型，避免跨运行复用状态。

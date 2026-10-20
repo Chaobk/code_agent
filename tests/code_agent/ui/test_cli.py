@@ -326,7 +326,7 @@ def test_prompt_reports_invalid_execution_environment_once(
     assert result.exit_code == 1
     assert result.stdout.count("执行环境配置错误") == 1
     assert result.stdout.count(expected_field) == 1
-    assert [event.type.value for event in events] == ["error"]
+    assert events == []
     constructor.assert_not_called()
     request.assert_not_awaited()
     handler.assert_not_awaited()

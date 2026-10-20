@@ -8,7 +8,7 @@ from types import FrameType
 from rich.console import Console
 
 from code_agent.core.agent import Agent
-from code_agent.events import AnyEvent, RunFinished
+from code_agent.events import RunResult
 from code_agent.ui.render import EventRenderer
 
 
@@ -37,7 +37,7 @@ async def run_session(
     session_task = asyncio.current_task()
     assert session_task is not None
     reading_input = False
-    current_run: asyncio.Task[str] | None = None
+    current_run: asyncio.Task[RunResult] | None = None
     interrupt_requested = False
 
     def handle_sigint(signum: int, frame: FrameType | None) -> None:
@@ -52,18 +52,6 @@ async def run_session(
 
         interrupt_requested = True
         loop.call_soon_threadsafe(task.cancel)
-
-    def on_event(event: AnyEvent) -> None:
-        nonlocal finished_reason
-
-        renderer.render_event(event)
-        if isinstance(event, RunFinished):
-            finished_reason = event.reason
-
-    async def run_current() -> str:
-        nonlocal run_started
-        run_started = True
-        return await agent.run(prompt, on_event=on_event)
 
     previous_handler = signal.signal(signal.SIGINT, handle_sigint)
 
@@ -90,32 +78,19 @@ async def run_session(
                 return 0
 
             interrupt_requested = False
-            finished_reason = None
-            run_started = False
-            current_run = asyncio.create_task(run_current())
+            current_run = asyncio.create_task(agent.run(prompt, on_event=renderer.render_event))
             try:
-                await current_run
+                result = await current_run
+                # 即使子任务自行吞掉了取消，外部会话取消仍不能变成继续输入。
+                if session_task.cancelling():
+                    raise asyncio.CancelledError
+                renderer.render_result(result)
             except asyncio.CancelledError:
                 if session_task.cancelling() or not interrupt_requested:
                     raise
-
-                if not run_started:
-                    console.print("本次输入已取消，运行尚未开始")
-                    continue
-
-                if finished_reason == "cancelled":
-                    continue
-
-                console.print("运行中断，但未收到正常的取消结束事件，会话结束")
-                return 1
+                renderer.render_cancelled()
             except Exception as exc:
-                if not interrupt_requested and finished_reason in ("error", "max_steps"):
-                    continue
-                console.print(
-                    f"会话发生意外错误：{type(exc).__name__}：{exc}",
-                    style="red",
-                    markup=False,
-                )
+                renderer.render_error(f"会话发生意外错误：{type(exc).__name__}: {exc}")
                 return 1
             finally:
                 current_run = None

@@ -1,5 +1,6 @@
 """M4a 入口分流与会话创建契约；既有 -p 测试继续保留。"""
 
+import asyncio
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -104,6 +105,26 @@ async def test_interactive_entry_creates_one_agent_and_passes_console(
 
     create.assert_called_once_with(settings)
     session.assert_awaited_once_with(agent, console=cli.console)
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_ctrl_c_at_cli_boundary_returns_130(
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoints: tuple[Mock, AsyncMock, AsyncMock],
+    interactive: bool,
+) -> None:
+    monkeypatch.setattr(cli, "_stdin_is_terminal", lambda: interactive)
+
+    # 不向 pytest 发信号；真实键盘实验独立进行。
+    def interrupted(coro: object) -> int:
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(asyncio, "run", interrupted)
+    result = runner.invoke(cli.app, [] if interactive else ["-p", "stream"])
+
+    assert result.exit_code == 130
+    assert result.stdout.count("运行已取消") == 1
 
 
 def test_interactive_creation_error_is_visible_once(

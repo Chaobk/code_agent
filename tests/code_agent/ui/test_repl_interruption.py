@@ -15,7 +15,7 @@ from litellm.types.utils import ModelResponseStream
 from rich.console import Console
 
 from code_agent.core.agent import Agent
-from code_agent.events import RunFinished, TextDelta
+from code_agent.events import RunResult, TextDelta
 from code_agent.tools.registry import ToolRegistry
 from code_agent.ui import repl
 
@@ -60,12 +60,12 @@ async def test_repeated_interrupt_waits_for_cleanup_before_next_input(
     output = StringIO()
     cleanup_done = False
 
-    async def run(prompt: str, *, on_event: Any) -> str:
+    async def run(prompt: str, *, on_event: Any) -> RunResult:
         nonlocal cleanup_done
         if prompt == "next":
             assert cleanup_done
-            on_event(RunFinished(reason="completed"))
-            return "done"
+
+            return RunResult(status="completed", text="done")
         asyncio.get_running_loop().call_soon(_interrupt, install_handler)
         try:
             await asyncio.Future()
@@ -76,7 +76,7 @@ async def test_repeated_interrupt_waits_for_cleanup_before_next_input(
             await asyncio.sleep(0)
             assert reader.call_count == 1
             cleanup_done = True
-            on_event(RunFinished(reason="cancelled"))
+
             raise
 
     agent = Mock(spec=Agent)
@@ -95,7 +95,7 @@ async def test_session_cancellation_waits_for_run_then_propagates(install_handle
     assert session_task is not None
     cleanup_done = False
 
-    async def run(prompt: str, *, on_event: Any) -> str:
+    async def run(prompt: str, *, on_event: Any) -> RunResult:
         nonlocal cleanup_done
         asyncio.get_running_loop().call_soon(session_task.cancel)
         try:
@@ -103,7 +103,6 @@ async def test_session_cancellation_waits_for_run_then_propagates(install_handle
         finally:
             await asyncio.sleep(0)
             cleanup_done = True
-            on_event(RunFinished(reason="cancelled"))
 
     agent = Mock(spec=Agent)
     agent.run = AsyncMock(side_effect=run)
@@ -116,12 +115,12 @@ async def test_session_cancellation_waits_for_run_then_propagates(install_handle
     install_handler.assert_called_with(signal.SIGINT, install_handler.return_value)
 
 
-async def test_later_run_cancelled_before_start_does_not_reuse_started_flag(
+async def test_later_run_can_be_cancelled_before_start(
     install_handler: Mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     created = 0
 
-    def create_task(coro: Any) -> asyncio.Task[str]:
+    def create_task(coro: Any) -> asyncio.Task[RunResult]:
         nonlocal created
         created += 1
         if created == 2:
@@ -142,7 +141,7 @@ async def test_later_run_cancelled_before_start_does_not_reuse_started_flag(
         ),
     )
     agent = Mock(spec=Agent)
-    agent.run = AsyncMock(return_value="done")
+    agent.run = AsyncMock(return_value=RunResult(status="completed", text="done"))
     output = StringIO()
     result = await repl.run_session(
         agent,
@@ -153,7 +152,7 @@ async def test_later_run_cancelled_before_start_does_not_reuse_started_flag(
     assert result == 0
     assert created == 2
     agent.run.assert_awaited_once()
-    assert output.getvalue().count("运行尚未开始") == 1
+    assert output.getvalue().count("运行已取消") == 1
 
 
 async def test_cancelled_model_stream_can_resume_without_partial_history(

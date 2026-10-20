@@ -32,7 +32,8 @@ class ToolRegistry:
     async def execute(self, name: str, arguments: str) -> ToolResult:
         """校验 JSON 参数并执行工具，返回统一的 ToolResult。
 
-        未知工具、参数错误和执行异常返回 ERROR；取消异常继续传播。
+        未知工具和参数错误返回 ERROR；handler 的内部异常和取消原样传播。
+        工具自行将可预期的操作失败转换成 ToolResult。
         同步 handler 在线程中调用，异步调用和返回的 awaitable 会被等待。
         已有 ToolResult 原样返回，其他结果包装为 COMPLETED。
         """
@@ -45,23 +46,14 @@ class ToolRegistry:
         except ValidationError as exc:
             return ToolResult(output={"error": f"工具参数错误：{exc}"}, status=ToolStatus.ERROR)
 
-        try:
-            handler = spec.handler
-            kwargs = args.model_dump()
-
-            if inspect.iscoroutinefunction(handler):
-                result = await handler(**kwargs)
-            else:
-                result = await asyncio.to_thread(handler, **kwargs)
-
-            if inspect.isawaitable(result):
-                result = await result
-
-            if isinstance(result, ToolResult):
-                return result
-            return ToolResult(output=result, status=ToolStatus.COMPLETED)
-        except Exception as exc:
-            return ToolResult(
-                output={"error": f"工具执行错误：{type(exc).__name__}: {exc}"},
-                status=ToolStatus.ERROR,
-            )
+        handler = spec.handler
+        kwargs = args.model_dump()
+        if inspect.iscoroutinefunction(handler):
+            result = await handler(**kwargs)
+        else:
+            result = await asyncio.to_thread(handler, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        if isinstance(result, ToolResult):
+            return result
+        return ToolResult(output=result, status=ToolStatus.COMPLETED)

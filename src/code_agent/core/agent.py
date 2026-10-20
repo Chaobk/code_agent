@@ -1,16 +1,17 @@
 """Agent 运行循环，协调模型请求、工具执行和会话历史。"""
 
-import asyncio
 from collections.abc import Callable
+from contextlib import aclosing
 from pathlib import Path
+
+from litellm.exceptions import LITELLM_EXCEPTION_TYPES
 
 from code_agent.config import Settings
 from code_agent.context.history import ConversationHistory
 from code_agent.events import (
     AnyEvent,
-    ErrorEvent,
     Role,
-    RunFinished,
+    RunResult,
     TextDelta,
     ToolCall,
     ToolCallEvent,
@@ -20,10 +21,12 @@ from code_agent.events import (
     ToolStatus,
 )
 from code_agent.llm.client import LLMClient
-from code_agent.llm.streaming import TurnAssembler
+from code_agent.llm.streaming import AssembledTurn, ModelProtocolError, TurnAssembler
 from code_agent.safety.policy import resolve_execution_environment
 from code_agent.tools.builtin import create_builtin_registry
 from code_agent.tools.registry import ToolRegistry
+
+MODEL_ERRORS = (*LITELLM_EXCEPTION_TYPES, ModelProtocolError)
 
 SYSTEM_PROMPT = """
     你是一个编码助手，要尽力完成用户的任务
@@ -71,92 +74,94 @@ class Agent:
         self.history = ConversationHistory()
         self.history.add_message({"role": "system", "content": system_prompt})
 
-    async def run(self, prompt: str, *, on_event: Callable[[AnyEvent], None] | None = None) -> str:
+    async def run(
+        self, prompt: str, *, on_event: Callable[[AnyEvent], None] | None = None
+    ) -> RunResult:
+        """直接执行请求与工具循环，所有退出统一结清已提交的调用。"""
+
         def emit(event: AnyEvent) -> None:
             if on_event is not None:
                 on_event(event)
 
-        self.history.add_message({"role": "user", "content": prompt})
-        for _ in range(self.max_steps):
-            assembler = TurnAssembler()
+        current_call_id: str | None = None
+        cancelled_observation: ToolResult | None = None
+        try:
+            self.history.add_message({"role": "user", "content": prompt})
+            for _ in range(self.max_steps):
+                turn = await self._request_turn(emit)
+                if isinstance(turn, RunResult):
+                    return turn
 
-            try:
-                async for chunk in self.client.stream_turn(
-                    self.history.get_model_messages(), tools=self.tools
-                ):
-                    text = assembler.push(chunk)
-                    if text is not None:
-                        emit(TextDelta(text=text))
-
-                assembled_turn = assembler.finish()
-
-                self.history.add_message(assembled_turn.message)
-            except asyncio.CancelledError:
-                emit(RunFinished(reason="cancelled"))
-                raise
-            except Exception as exc:
-                emit(ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
-                emit(RunFinished(reason="error"))
-                raise
-
-            tool_calls = assembled_turn.message.get("tool_calls") or []
-            for tool_call in tool_calls:
-                try:
+                self.history.add_message(turn.message)
+                tool_calls = turn.message.get("tool_calls") or []
+                for tool_call in tool_calls:
                     call = ToolCall(
                         id=tool_call["id"],
                         name=tool_call["function"]["name"],
                         arguments=tool_call["function"]["arguments"],
                     )
                     emit(ToolCallEvent(tool_call=call))
-
+                    current_call_id = call.id
                     tool_result = await self.registry.execute(
-                        tool_call["function"]["name"],
-                        tool_call["function"]["arguments"],
+                        call.name,
+                        call.arguments,
                     )
-                except asyncio.CancelledError as exc:
-                    for pending_id in self.history.get_pending_calls():
-                        is_current = pending_id == tool_call["id"]
+                    self._append_tool_result(call.id, tool_result)
+                    current_call_id = None
+                    emit(ToolResultEvent(tool_result=tool_result, tool_call_id=call.id))
 
-                        if is_current and isinstance(exc, ToolExecutionCancelled):
-                            observation = exc.observation
-                        else:
-                            observation = ToolResult(
-                                status=ToolStatus.ERROR,
-                                output={
-                                    "reason": "interrupted",
-                                    "execution": ("unknown" if is_current else "not_started"),
-                                    "error": (
-                                        "调用被中断，未取得可确认的执行结果"
-                                        if is_current
-                                        else "本轮已中断，此调用尚未启动"
-                                    ),
-                                },
-                            )
-                        self._append_tool_result(pending_id, observation)
-                        emit(
-                            ToolResultEvent(
-                                tool_result=observation,
-                                tool_call_id=pending_id,
-                            )
-                        )
-                    emit(RunFinished(reason="cancelled"))
-                    raise
-                self._append_tool_result(tool_call["id"], tool_result)
-                emit(ToolResultEvent(tool_result=tool_result, tool_call_id=tool_call["id"]))
+                if not tool_calls:
+                    return RunResult(status="completed", text=turn.message["content"] or "")
 
-            if tool_calls:
-                continue
+            return RunResult(status="max_steps", error=f"达到最大请求轮数：{self.max_steps}")
+        except ToolExecutionCancelled as exc:
+            cancelled_observation = exc.observation
+            raise
+        finally:
+            self._settle_pending(current_call_id, cancelled_observation)
 
-            if assembled_turn.finish_reason == "tool_calls":
-                raise RuntimeError("模型工具调用，但没有返回调用信息")
+    async def _request_turn(self, emit: Callable[[AnyEvent], None]) -> AssembledTurn | RunResult:
+        """请求失败只在模型边界转换；显示回调和历史错误不在捕获范围内。"""
+        assembler = TurnAssembler()
+        messages = self.history.get_model_messages()
+        async with aclosing(self.client.stream_turn(messages, tools=self.tools)) as stream:
+            while True:
+                try:
+                    chunk = await anext(stream)
+                    text = assembler.push(chunk)
+                except StopAsyncIteration:
+                    break
+                except MODEL_ERRORS as exc:
+                    return RunResult(status="failed", error=f"{type(exc).__name__}: {exc}")
+                if text is not None:
+                    emit(TextDelta(text=text))
 
-            if assembled_turn.finish_reason == "stop" and tool_calls == []:
-                emit(RunFinished(reason="completed"))
-                return assembled_turn.message["content"] or ""
+        try:
+            return assembler.finish()
+        except ModelProtocolError as exc:
+            return RunResult(status="failed", error=f"{type(exc).__name__}: {exc}")
 
-        emit(ErrorEvent(message=f"达到最大请求轮数：{self.max_steps}"))
-        emit(RunFinished(reason="max_steps"))
-        raise RuntimeError(f"达到最大请求轮数: {self.max_steps}")
+    def _settle_pending(
+        self, current_call_id: str | None, observation: ToolResult | None = None
+    ) -> None:
+        """保留确定观察，补齐未知与未启动调用；收尾不再调用显示回调。"""
+        for pending_id in self.history.get_pending_calls():
+            is_current = pending_id == current_call_id
+            result = observation if is_current else None
+            if result is None:
+                result = ToolResult(
+                    status=ToolStatus.ERROR,
+                    output={
+                        "reason": "interrupted",
+                        "execution": "unknown" if is_current else "not_started",
+                        "error": (
+                            "运行已停止，未取得可确认的执行结果"
+                            if is_current
+                            else "运行已停止，此调用尚未启动"
+                        ),
+                    },
+                )
+            self._append_tool_result(pending_id, result)
 
     def _append_tool_result(self, call_id: str, result: ToolResult) -> None:
         self.history.add_message(

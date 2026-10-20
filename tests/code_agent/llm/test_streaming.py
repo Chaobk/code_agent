@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from litellm.types.utils import ModelResponseStream
 
-from code_agent.llm.streaming import TurnAssembler
+from code_agent.llm.streaming import ModelProtocolError, TurnAssembler
 
 
 def text_chunk(
@@ -71,7 +71,7 @@ def test_finish_rejects_stream_without_finish_reason() -> None:
     assembler = TurnAssembler()
     assembler.push(text_chunk("尚未收完"))
 
-    with pytest.raises(RuntimeError, match="结束"):
+    with pytest.raises(ModelProtocolError, match="结束"):
         assembler.finish()
 
 
@@ -163,7 +163,7 @@ def test_invalid_tool_type_is_rejected() -> None:
     )
     invalid = tool_fragment(0, "", call_type="other")
 
-    with pytest.raises(RuntimeError, match="类型"):
+    with pytest.raises(ModelProtocolError, match="类型"):
         assembler.push(tool_chunk(invalid))
 
 
@@ -172,7 +172,7 @@ def test_finish_rejects_abnormal_reason(finish_reason: str) -> None:
     assembler = TurnAssembler()
     assembler.push(text_chunk("未完成", finish_reason=finish_reason))
 
-    with pytest.raises(RuntimeError, match="未正常|异常"):
+    with pytest.raises(ModelProtocolError, match="未正常|异常"):
         assembler.finish()
 
 
@@ -180,5 +180,5 @@ def test_finish_rejects_tool_calls_reason_without_calls() -> None:
     assembler = TurnAssembler()
     assembler.push(text_chunk(finish_reason="tool_calls"))
 
-    with pytest.raises(RuntimeError, match="没有.*调用|缺少.*调用|调用信息"):
+    with pytest.raises(ModelProtocolError, match="没有.*调用|缺少.*调用|调用信息"):
         assembler.finish()

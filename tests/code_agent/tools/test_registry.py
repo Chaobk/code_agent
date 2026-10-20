@@ -8,7 +8,7 @@ from collections.abc import Awaitable
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from code_agent.events import ToolResult, ToolStatus
 from code_agent.tools.registry import ToolRegistry
@@ -182,30 +182,26 @@ async def test_execute_awaits_handler_result_before_returning(kind: str) -> None
     assert calls == [("异步", 2, loop_thread)]
 
 
-async def test_execute_returns_structured_execution_error() -> None:
-    handler = Mock(side_effect=RuntimeError("执行失败"))
+async def test_execute_propagates_internal_execution_error() -> None:
+    error = RuntimeError("执行失败")
+    handler = Mock(side_effect=error)
 
-    result = await _registry(handler).execute("echo", '{"text":"你好"}')
+    with pytest.raises(RuntimeError) as caught:
+        await _registry(handler).execute("echo", '{"text":"你好"}')
 
-    assert isinstance(result, ToolResult)
-    assert result.status == ToolStatus.ERROR
-    assert "RuntimeError" in result.output["error"]
-    assert "执行失败" in result.output["error"]
+    assert caught.value is error
     handler.assert_called_once_with(text="你好", repeat=1)
 
 
-async def test_execute_classifies_handler_validation_failure_as_execution_error() -> None:
-    """已通过输入校验后,工具内部的校验异常属于执行错误。"""
+async def test_execute_propagates_handler_validation_failure() -> None:
+    """只转换入参校验，工具内部的校验错误不能被降级。"""
 
     def handler(text: str, repeat: int) -> str:
         EchoArgs(text=text, repeat=0)
         return text
 
-    result = await _registry(handler).execute("echo", '{"text":"有效输入"}')
-
-    assert result.status == ToolStatus.ERROR
-    assert "工具执行错误" in result.output["error"]
-    assert "ValidationError" in result.output["error"]
+    with pytest.raises(ValidationError):
+        await _registry(handler).execute("echo", '{"text":"有效输入"}')
 
 
 async def test_execute_propagates_cancellation() -> None:

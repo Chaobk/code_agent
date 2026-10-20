@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -55,6 +56,15 @@ class ToolResult(BaseModel):
     truncated: bool = False
 
 
+@dataclass(frozen=True)
+class RunResult:
+    """一次运行的受控结束结果；取消和内部故障仍向外传播。"""
+
+    status: Literal["completed", "failed", "max_steps"]
+    text: str = ""
+    error: str | None = None
+
+
 class Message(BaseModel):
     """对话消息，包含正文及工具调用关联信息。"""
 
@@ -68,13 +78,8 @@ class EventType(StrEnum):
     """运行事件类型。"""
 
     TEXT_DELTA = "text_delta"
-    ASSISTANT_MESSAGE = "assistant_message"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
-    STEP_STARTED = "step_started"
-    STEP_FINISHED = "step_finished"
-    RUN_FINISHED = "run_finished"
-    ERROR = "error"
 
 
 class AgentEvent(BaseModel):
@@ -90,13 +95,6 @@ class TextDelta(AgentEvent):
     text: str
 
 
-class AssistantMessage(AgentEvent):
-    """完整助手消息事件。"""
-
-    type: Literal[EventType.ASSISTANT_MESSAGE] = EventType.ASSISTANT_MESSAGE
-    message: Message
-
-
 class ToolCallEvent(AgentEvent):
     """模型请求了一次工具调用。"""
 
@@ -110,34 +108,6 @@ class ToolResultEvent(AgentEvent):
     tool_call_id: str
 
 
-class StepStarted(AgentEvent):
-    """一步(一次模型往返)开始。"""
-
-    type: Literal[EventType.STEP_STARTED] = EventType.STEP_STARTED
-    index: int
-
-
-class StepFinished(AgentEvent):
-    """一步结束。"""
-
-    type: Literal[EventType.STEP_FINISHED] = EventType.STEP_FINISHED
-    index: int
-
-
-class RunFinished(AgentEvent):
-    """一次运行已终止，具体原因由 reason 表示，不代表任务成功。"""
-
-    type: Literal[EventType.RUN_FINISHED] = EventType.RUN_FINISHED
-    reason: str
-
-
-class ErrorEvent(AgentEvent):
-    """出错。"""
-
-    type: Literal[EventType.ERROR] = EventType.ERROR
-    message: str
-
-
 class ToolExecutionCancelled(asyncio.CancelledError):
     """携带已取得工具结果的取消异常。"""
 
@@ -146,13 +116,4 @@ class ToolExecutionCancelled(asyncio.CancelledError):
         self.observation = observation
 
 
-AnyEvent = (
-    TextDelta
-    | AssistantMessage
-    | ToolCallEvent
-    | StepStarted
-    | StepFinished
-    | RunFinished
-    | ErrorEvent
-    | ToolResultEvent
-)
+AnyEvent = TextDelta | ToolCallEvent | ToolResultEvent

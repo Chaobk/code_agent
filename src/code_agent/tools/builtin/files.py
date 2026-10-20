@@ -4,6 +4,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from code_agent.events import ToolResult, ToolStatus
+
 MAX_LINES_PER_CALL = 2000  # 单次最多返回行数
 
 
@@ -19,7 +21,7 @@ class ReadFileArgs(BaseModel):
     )
 
 
-def read_file(path: str, start_line: int = 1, max_lines: int = 500) -> str:
+def read_file(path: str, start_line: int = 1, max_lines: int = 500) -> str | ToolResult:
     start_line = max(1, start_line)
     if max_lines < 1:
         raise ValueError("max_lines should be > 0")
@@ -27,14 +29,14 @@ def read_file(path: str, start_line: int = 1, max_lines: int = 500) -> str:
 
     fp = Path(path).expanduser()
 
-    if not fp.exists():
-        raise FileNotFoundError(fp)
-
-    if not fp.is_file():
-        raise ValueError(f"{path} 路径下并不是一个可读文件")
-
-    with open(fp, encoding="utf-8") as f:
-        lines = f.readlines()
+    try:
+        with fp.open(encoding="utf-8") as f:
+            lines = f.readlines()
+    except (OSError, UnicodeError) as exc:
+        return ToolResult(
+            output={"error": f"读取文件失败：{type(exc).__name__}: {exc}"},
+            status=ToolStatus.ERROR,
+        )
 
     selected_lines = lines[start_line - 1 : start_line - 1 + max_lines]
     numbered_lines = []
