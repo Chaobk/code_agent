@@ -109,15 +109,15 @@ Codex 的 `.rules` 文件使用 `prefix_rule`，按命令参数序列匹配，�
 
 ```python
 prefix_rule(
-    pattern = ["git", "push"],
-    decision = "prompt",
-    justification = "推送会更新远端仓库，需要审批",
+    pattern=["git", "push"],
+    decision="prompt",
+    justification="推送会更新远端仓库，需要审批",
 )
 
 prefix_rule(
-    pattern = ["git", "reset", "--hard"],
-    decision = "forbidden",
-    justification = "避免丢弃未提交工作",
+    pattern=["git", "reset", "--hard"],
+    decision="forbidden",
+    justification="避免丢弃未提交工作",
 )
 ```
 

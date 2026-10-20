@@ -71,6 +71,7 @@ class ToolStatus(StrEnum):
     ERROR = "error"
     TIMED_OUT = "timed_out"
 
+
 class ToolResult(BaseModel):
     output: JsonValue
     status: ToolStatus

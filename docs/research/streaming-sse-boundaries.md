@@ -116,7 +116,7 @@ b'data: {"con'
 b'tent":"A"}\n\ndata: {"content":"B"}\n'
 
 # 读取 3
-b'\n'
+b"\n"
 ```
 
 | 收到的数据 | 第一事件 | 第二事件 |
@@ -427,7 +427,7 @@ async def collect(blocks: list[bytes]) -> list[str]:
 
 
 def one_byte_blocks(payload: bytes) -> list[bytes]:
-    return [payload[i:i + 1] for i in range(len(payload))]
+    return [payload[i : i + 1] for i in range(len(payload))]
 
 
 async def main() -> None:
@@ -454,9 +454,7 @@ async def main() -> None:
     print("incomplete: no event dispatched")
 
     for ending in ["\n", "\r", "\r\n"]:
-        payload2 = (
-            f"\ufeff: ping{ending}data: a{ending}data: b{ending}{ending}"
-        ).encode("utf-8")
+        payload2 = (f"\ufeff: ping{ending}data: a{ending}data: b{ending}{ending}").encode("utf-8")
         actual = await collect(one_byte_blocks(payload2))
         assert actual == ["a\nb"], (repr(ending), actual)
 
