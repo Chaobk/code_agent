@@ -2,6 +2,14 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-20 M4b 终端取消接线与阶段性保存
+
+- 用户手写 `ui/repl.py`：输入时 Ctrl+C 丢弃当前行；运行时只请求取消当前 Task 一次，等待其结束后再接受输入；正常返回以实际结果为准。每次运行重置取消意图、启动标记和结束类型，避免跨运行复用状态。
+- 通过事件回调观察 `RunFinished`；仅用户取消且核心报告取消结束时正常续用，启动前取消由 UI 提示。外部取消继续传播；未正常报告的异常显示诊断并结束会话，核心已报告的 error/max_steps 不重复打印。所有退出路径恢复原 SIGINT handler。
+- Codex 新增 9 项回归测试：输入中断、重复中断与清理等待、外部会话取消、后续 Task 启动前取消、真实 Agent 配合假模型的流取消后历史续用、三种意外异常，以及前次 cancelled 结束标记不影响下一次运行。信号入口被替换，测试未向 pytest 发送真实 SIGINT。
+- 完整 `.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider`：304 项通过，1 条既有 Pydantic ReadOnly 依赖警告；Ruff 规则、源码及测试格式、git diff --check 通过。为避开 Windows 沙箱临时目录权限限制，完整测试在沙箱外运行，临时目录位于已忽略的 `artifacts/m4b-interruption-20261020-check/`，模型价格表使用 LiteLLM 本地副本。
+- 本次只保存取消接线和自动化证据。真实终端中的输入、模型输出和 Bash 中断后继续尚未验证；Bash 清理失败经 Registry/Core 后是否保留取消语义仍需联动测试。完整 M4b 未验收，不进入 M4c。
+
 ## 2026-10-19 M4a 真实终端多轮会话与独立复核
 
 - 用户指定 `C:/Users/1004945427/Desktop/pros/code_agent_target`，并明确授权将本次任务、靶子代码、测试、文档、命令输出与本地路径发送到当前 DeepSeek 服务。应用提交为 `6e3cc34`，模型 deepseek/deepseek-chat，max_steps=12，request_timeout_seconds=60。
