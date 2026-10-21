@@ -3,6 +3,9 @@
 import asyncio
 import codecs
 import os
+import signal
+import subprocess
+import sys
 from contextlib import suppress
 from pathlib import Path
 
@@ -57,6 +60,7 @@ async def run_bash(
     超时或取消时清理进程，取消完成清理后继续传播。
     """
     bash_path = "bash" if bash_path is None else bash_path
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
     try:
         process = await asyncio.create_subprocess_exec(
             bash_path,
@@ -68,6 +72,7 @@ async def run_bash(
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            creationflags=creationflags,
         )
     except OSError as e:
         return ToolResult(
@@ -91,7 +96,9 @@ async def run_bash(
         status = ToolStatus.TIMED_OUT
         exit_code = None
     finally:
-        output = await _cleanup_execution(process, tracked_process, output_task)
+        output = await _cleanup_execution(
+            process, tracked_process, output_task, signal_process_group=bool(creationflags)
+        )
 
     assert output is not None
     stdout, stderr, truncated = output
@@ -152,15 +159,31 @@ async def _cleanup_execution(
     process: asyncio.subprocess.Process,
     tracked_process: psutil.Process | None,
     output_task: asyncio.Task[tuple[str, str, bool]] | None,
+    *,
+    signal_process_group: bool = False,
 ) -> tuple[str, str, bool] | None:
     """回收进程及读取任务，首个收尾故障向外传播，其他故障附在诊断中。"""
     error: Exception | None = None
     output = None
+    if signal_process_group and process.returncode is None:
+        try:
+            # 仅向本次用 CREATE_NEW_PROCESS_GROUP 创建的组发送，不广播到整个控制台。
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            error = exc
+        else:
+            # 给 MSYS 将控制事件传给子进程的机会，再执行原生快照清理。
+            await asyncio.sleep(0.1)
     try:
         if process.returncode is None or (output_task is not None and not output_task.done()):
             await stop_process_tree(process, tracked_process)
     except Exception as exc:
-        error = exc
+        if error is None:
+            error = exc
+        else:
+            error.add_note(f"进程回收也失败：{type(exc).__name__}: {exc}")
 
     if output_task is not None:
         try:
@@ -210,7 +233,7 @@ async def stop_process_tree(
 
 
 def _stop_tracked_process_tree(parent: psutil.Process) -> None:
-    """使用 psutil 清理快照中的后代,保留根进程给 asyncio 回收。"""
+    """使用 psutil 清理快照中的后代，保留根进程给 asyncio 回收。"""
     try:
         children = parent.children(recursive=True)
     except psutil.NoSuchProcess:

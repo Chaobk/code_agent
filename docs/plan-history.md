@@ -2,6 +2,27 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-21 Git Bash 取消故障、进程组修复与上游对照
+
+- 用户真实输入 `sleep 20 && echo "done"`，取消后报输出收尾超时和事件循环关闭时的
+  transport 析构异常。直接取消 Task 复现同一超时：Windows 原生快照漏掉 MSYS sleep，
+  Bash 退出后 sleep 仍持有输出管道。此前 Python 子进程实验未覆盖该场景。
+- 用户先要求规格与测试，随后明确授权 Codex 完成修复，并要求参考成熟实现、缩减代码。
+  对照 mini-swe-agent、Codex、OpenCode 官方源码后，实测 taskkill /T 仍漏 sleep；
+  最终删除 MSYS 解析方案，改为 Windows 启动时建立独立控制台进程组，收尾定向发送
+  CTRL_BREAK，等待 100ms，再保留原生回收与 2 秒输出收尾。控制事件失败也尝试回收。
+- `.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider
+  --basetemp=artifacts/bash-cancel-20261021/pytest-complete --tb=short`：**320 项通过**，
+  1 条既有 Pydantic ReadOnly 依赖警告。新增真实 Git Bash 取消、超时，以及信号失败
+  仍回收的测试；移除废弃 MSYS 解析接口的三项测试，未撤销真实故障回归。
+- 真实 TTY、脚本模型和 Git Bash：sleep → 实际 Ctrl+C → 回到提示符 → after 再调用
+  Bash → /exit。应用捕获退出码 0，历史 pending 为空，两个进程的 stdout/stderr 均 EOF，
+  记录的原生进程已退出，输出无超时或 transport 析构异常。PTY PowerShell 宿主返回 1，
+  与应用退出码分别记录。未访问真实模型服务。
+- 原始材料在 `artifacts/bash-cancel-20261021/`，TTY 记录在 `tty-fixed/`；
+  [修复说明](design/m4b-git-bash-cancellation.md)和[上游对比](research/subprocess-cleanup-comparison.md)
+  记录适用边界。该机制要求同一控制台，不替代 Job Object 或 OS 沙箱，不代表 M4b 已获用户验收。
+
 ## 2026-10-20 执行链重构、完整回归与真实 TTY 实验
 
 - 用户确认“直接循环、明确结果、集中收尾”的方案，随后明确授权本次由 Codex 完成全部重构，供用户阅读代码；后续默认手写分工保留。

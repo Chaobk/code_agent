@@ -1,6 +1,8 @@
 """Bash 执行器测试，使用模拟进程。"""
 
 import asyncio
+import signal
+import subprocess
 import sys
 from contextlib import suppress
 from pathlib import Path
@@ -86,6 +88,8 @@ async def test_run_bash_uses_fixed_workspace_and_returns_process_output(
     assert call.kwargs["stdin"] == asyncio.subprocess.DEVNULL
     assert call.kwargs["stdout"] == asyncio.subprocess.PIPE
     assert call.kwargs["stderr"] == asyncio.subprocess.PIPE
+    expected_flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+    assert call.kwargs["creationflags"] == expected_flags
     assert isinstance(result, ToolResult)
     assert result.status == ToolStatus.COMPLETED
     assert result.truncated is False
@@ -243,7 +247,12 @@ async def test_run_bash_drains_output_during_cleanup(
     stdout.feed_data(b"partial output")
     stderr = asyncio.StreamReader()
     process = SimpleNamespace(
-        pid=4321, stdout=stdout, stderr=stderr, returncode=None, wait=AsyncMock(return_value=-15)
+        pid=4321,
+        stdout=stdout,
+        stderr=stderr,
+        returncode=None,
+        wait=AsyncMock(return_value=-15),
+        send_signal=Mock(),
     )
     tracked = Mock()
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
@@ -287,7 +296,7 @@ async def test_run_bash_cleanup_failure_stops_and_reclaims_output_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """清理失败传播故障和原取消，并确保读取任务结束。"""
-    process = SimpleNamespace(pid=4321, returncode=None)
+    process = SimpleNamespace(pid=4321, returncode=None, send_signal=Mock())
     tracked = Mock()
     started = asyncio.Event()
     output_closed = asyncio.Event()
@@ -335,7 +344,9 @@ async def test_run_bash_reclaims_resources_on_internal_failure(
     started = asyncio.Event()
     read_done = asyncio.Event()
     release = asyncio.Event()
-    process = SimpleNamespace(pid=4321, returncode=None, kill=Mock(), wait=AsyncMock())
+    process = SimpleNamespace(
+        pid=4321, returncode=None, kill=Mock(), wait=AsyncMock(), send_signal=Mock()
+    )
     identity_error = psutil.AccessDenied(4321)
     reader_error = RuntimeError("READ_FAILED")
 
@@ -383,6 +394,34 @@ async def test_run_bash_reclaims_resources_on_internal_failure(
         release.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 控制台进程组")
+async def test_group_signal_failure_still_reclaims_native_process_and_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = OSError("NO_SHARED_CONSOLE")
+    process = SimpleNamespace(pid=4321, returncode=None, send_signal=Mock(side_effect=error))
+    released = asyncio.Event()
+
+    async def collect() -> tuple[str, str, bool]:
+        await released.wait()
+        return "", "", False
+
+    async def stop(*args: object) -> None:
+        process.returncode = -1
+        released.set()
+
+    cleanup = AsyncMock(side_effect=stop)
+    monkeypatch.setattr(shell_module, "stop_process_tree", cleanup)
+    output_task = asyncio.create_task(collect())
+    with pytest.raises(OSError, match="NO_SHARED_CONSOLE") as caught:
+        await shell_module._cleanup_execution(process, None, output_task, signal_process_group=True)
+
+    assert caught.value is error
+    process.send_signal.assert_called_once_with(signal.CTRL_BREAK_EVENT)
+    cleanup.assert_awaited_once_with(process, None)
+    assert output_task.done()
 
 
 async def test_collect_output_drains_large_real_process_output(tmp_path: Path) -> None:

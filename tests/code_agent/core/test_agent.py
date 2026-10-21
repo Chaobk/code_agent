@@ -1018,7 +1018,7 @@ async def test_run_stops_after_bash_cancellation_even_when_cleanup_fails(
     started = asyncio.Event()
     output_closed = asyncio.Event()
     readers: list[asyncio.Task[Any]] = []
-    process = SimpleNamespace(pid=4321, returncode=None)
+    process = SimpleNamespace(pid=4321, returncode=None, send_signal=Mock())
     tracked = Mock()
 
     async def collect(process: Any) -> tuple[str, str, bool]:
