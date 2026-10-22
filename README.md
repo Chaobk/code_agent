@@ -14,6 +14,8 @@
 
 流式响应的传输与解析见 [网络读取、SSE 事件与模型分片](docs/research/streaming-sse-boundaries.md)：说明分片边界、文本和工具调用提取、处理方案及可复现的无网络实验。
 
+设计参考见 [Pi Coding Agent 源码研究](docs/research/pi-coding-agent-design.md)：按固定源码版本梳理循环、上下文与记忆、工具与权限、运行模式、多 Agent 和评测，附核心逻辑与本项目问题速查。
+
 ## 当前进度
 
 - **M0、M1、M2a 已验收**：模型接入、非流式工具循环、工具注册与校验、历史配对、取消处理及原生结束协议已完成。
