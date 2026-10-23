@@ -1,13 +1,15 @@
 import re
 from enum import Enum
 
+
 class Decision(Enum):
     ALLOW = "allow"
     ASK = "ask"
     DENY = "deny"
 
+
 DENY_PATTERNS = [
-    r"\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+/",   # rm -rf / 及其变体
+    r"\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+/",  # rm -rf / 及其变体
     r"\bmkfs\.",
     r"\bdd\s+.*of=/dev/",
     r"\bsudo\b",
@@ -15,6 +17,7 @@ DENY_PATTERNS = [
 ]
 
 ALLOW_COMMANDS = {"ls", "cat", "head", "tail", "grep", "wc", "pwd", "which", "git"}
+
 
 def check_command(command: str) -> Decision:
     for p in DENY_PATTERNS:

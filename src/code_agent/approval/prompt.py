@@ -7,6 +7,7 @@ import sys
 _VALID_CHOICES = {"o", "a", "r"}
 _MAX_RETRIES = 3
 
+
 def prompt_decision(description: str) -> str:
     """向用户询问审批决策。
 

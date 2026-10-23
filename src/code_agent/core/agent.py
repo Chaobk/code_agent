@@ -1,11 +1,14 @@
 """Agent 运行循环，协调模型请求、工具执行和会话历史。"""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import aclosing
 from pathlib import Path
+from typing import Any
 
 from litellm.exceptions import LITELLM_EXCEPTION_TYPES
 
+from code_agent.approval.gate import ApprovalGate
+from code_agent.approval.policy import ApprovalPolicy
 from code_agent.config import Settings
 from code_agent.context.history import ConversationHistory
 from code_agent.events import (
@@ -24,6 +27,7 @@ from code_agent.llm.client import LLMClient
 from code_agent.llm.streaming import AssembledTurn, ModelProtocolError, TurnAssembler
 from code_agent.safety.policy import resolve_execution_environment
 from code_agent.tools.builtin import create_builtin_registry
+from code_agent.tools.builtin.shell import BashApprovalPolicy
 from code_agent.tools.registry import ToolRegistry
 
 MODEL_ERRORS = (*LITELLM_EXCEPTION_TYPES, ModelProtocolError)
@@ -52,6 +56,8 @@ class Agent:
         *,
         workspace_dir: Path,
         bash_path: str = "bash",
+        approval_gate: ApprovalGate,
+        approval_policies: Mapping[str, ApprovalPolicy],
     ):
         self.workspace_dir = workspace_dir.expanduser().resolve()
         self.client = client
@@ -73,6 +79,45 @@ class Agent:
         )
         self.history = ConversationHistory()
         self.history.add_message({"role": "system", "content": system_prompt})
+
+        self.approval_gate = approval_gate
+        self.approval_policies = dict(approval_policies)
+
+    async def _before_tool_execute(
+        self,
+        name: str,
+        args: dict[str, Any],
+    ) -> ToolResult | None:
+        """检查本次工具调用，返回结果标识阻止执行"""
+        policy = self.approval_policies.get(name)
+
+        if policy is None:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                output={
+                    "reason": "approval_unavailable",
+                    "execution": "not_started",
+                    "error": f"工具尚未配置审批策略：{name}",
+                },
+            )
+
+        allowed, reason = self.approval_gate.check(
+            tool_name=name,
+            args=args,
+            policy=policy,
+        )
+
+        if not allowed:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                output={
+                    "reason": "permission_denied",
+                    "execution": "not_started",
+                    "error": reason,
+                },
+            )
+
+        return None
 
     async def run(
         self, prompt: str, *, on_event: Callable[[AnyEvent], None] | None = None
@@ -100,11 +145,21 @@ class Agent:
                         name=tool_call["function"]["name"],
                         arguments=tool_call["function"]["arguments"],
                     )
+
+                    async def before_execute(
+                        name: str, args: dict[str, Any], *, call_id: str = call.id
+                    ) -> ToolResult | None:
+                        nonlocal current_call_id
+
+                        blocked = await self._before_tool_execute(name, args)
+                        if blocked is None:
+                            current_call_id = call_id
+
+                        return blocked
+
                     emit(ToolCallEvent(tool_call=call))
-                    current_call_id = call.id
                     tool_result = await self.registry.execute(
-                        call.name,
-                        call.arguments,
+                        call.name, call.arguments, before_execute=before_execute
                     )
                     self._append_tool_result(call.id, tool_result)
                     current_call_id = None
@@ -169,7 +224,11 @@ class Agent:
         )
 
 
-def create_agent(settings: Settings) -> Agent:
+def create_agent(
+    settings: Settings,
+    *,
+    prompt_fn: Callable[[str], str] | None = None,
+) -> Agent:
     """校验执行环境，并按应用配置创建 Agent。"""
     env = resolve_execution_environment(
         workspace_dir=settings.workspace_dir, bash_path=settings.bash_path
@@ -180,4 +239,8 @@ def create_agent(settings: Settings) -> Agent:
         max_steps=settings.max_steps,
         workspace_dir=env.workspace_dir,
         bash_path=env.bash_path,
+        approval_gate=ApprovalGate(prompt_fn=prompt_fn),
+        approval_policies={
+            "bash": BashApprovalPolicy(),
+        },
     )

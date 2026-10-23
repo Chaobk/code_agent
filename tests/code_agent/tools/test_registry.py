@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from code_agent.events import ToolResult, ToolStatus
 from code_agent.tools.registry import ToolRegistry
 from code_agent.tools.spec import ToolHandler, ToolSpec
+from tests.code_agent.helpers import allow_tool
 
 
 class EchoArgs(BaseModel):
@@ -87,7 +88,7 @@ async def test_execute_returns_structured_validation_error_without_running_handl
         ToolSpec(name="echo", description="返回指定文本", args_model=EchoArgs, handler=handler)
     )
 
-    result = await registry.execute("echo", '{"text":"你好","repeat":0}')
+    result = await registry.execute("echo", '{"text":"你好","repeat":0}', before_execute=allow_tool)
 
     assert result.status == ToolStatus.ERROR
     assert result.truncated is False
@@ -101,7 +102,7 @@ async def test_execute_returns_structured_error_for_unknown_tool() -> None:
     handler = Mock(return_value="不应执行")
     registry = _registry(handler)
 
-    result = await registry.execute("missing", "{}")
+    result = await registry.execute("missing", "{}", before_execute=allow_tool)
 
     assert isinstance(result, ToolResult)
     assert result.status == ToolStatus.ERROR
@@ -114,7 +115,7 @@ async def test_execute_wraps_json_output_and_applies_parameter_defaults(output: 
     handler = Mock(return_value=output)
     registry = _registry(handler)
 
-    result = await registry.execute("echo", '{"text":"你好"}')
+    result = await registry.execute("echo", '{"text":"你好"}', before_execute=allow_tool)
 
     assert isinstance(result, ToolResult)
     assert result.output == output
@@ -132,7 +133,9 @@ async def test_execute_runs_sync_handler_outside_event_loop_thread() -> None:
         execution_threads.append(threading.get_ident())
         return text * repeat
 
-    result = await _registry(handler).execute("echo", '{"text":"同步","repeat":2}')
+    result = await _registry(handler).execute(
+        "echo", '{"text":"同步","repeat":2}', before_execute=allow_tool
+    )
 
     assert isinstance(result, ToolResult)
     assert result.output == "同步同步"
@@ -148,7 +151,7 @@ async def test_execute_preserves_existing_tool_result_status_and_truncation() ->
     )
     handler = AsyncMock(return_value=observation)
 
-    result = await _registry(handler).execute("echo", '{"text":"你好"}')
+    result = await _registry(handler).execute("echo", '{"text":"你好"}', before_execute=allow_tool)
 
     assert isinstance(result, ToolResult)
     assert result == observation
@@ -172,7 +175,9 @@ async def test_execute_awaits_handler_result_before_returning(kind: str) -> None
             return await work(text, repeat)
 
     handler = AsyncEcho() if kind == "async-callable" else work_wrapper
-    result = await _registry(handler).execute("echo", '{"text":"异步","repeat":2}')
+    result = await _registry(handler).execute(
+        "echo", '{"text":"异步","repeat":2}', before_execute=allow_tool
+    )
     # 错误实现可能漏 await;关闭泄漏的 coroutine,避免测试留下无关警告。
     if inspect.iscoroutine(result):
         result.close()
@@ -187,7 +192,7 @@ async def test_execute_propagates_internal_execution_error() -> None:
     handler = Mock(side_effect=error)
 
     with pytest.raises(RuntimeError) as caught:
-        await _registry(handler).execute("echo", '{"text":"你好"}')
+        await _registry(handler).execute("echo", '{"text":"你好"}', before_execute=allow_tool)
 
     assert caught.value is error
     handler.assert_called_once_with(text="你好", repeat=1)
@@ -201,13 +206,71 @@ async def test_execute_propagates_handler_validation_failure() -> None:
         return text
 
     with pytest.raises(ValidationError):
-        await _registry(handler).execute("echo", '{"text":"有效输入"}')
+        await _registry(handler).execute("echo", '{"text":"有效输入"}', before_execute=allow_tool)
 
 
 async def test_execute_propagates_cancellation() -> None:
     handler = AsyncMock(side_effect=asyncio.CancelledError())
 
     with pytest.raises(asyncio.CancelledError):
-        await _registry(handler).execute("echo", '{"text":"你好"}')
+        await _registry(handler).execute("echo", '{"text":"你好"}', before_execute=allow_tool)
 
     handler.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [("missing", "{}"), ("echo", "{"), ("echo", '{"text":"hello","repeat":0}')],
+)
+async def test_invalid_call_never_reaches_permission_hook(name: str, arguments: str) -> None:
+    handler = Mock()
+    before = AsyncMock(side_effect=AssertionError("无效调用不得进入审批"))
+
+    result = await _registry(handler).execute(name, arguments, before_execute=before)
+
+    assert result.status == ToolStatus.ERROR
+    before.assert_not_awaited()
+    handler.assert_not_called()
+
+
+async def test_hook_sees_validated_defaults_but_cannot_mutate_execution_arguments() -> None:
+    handler = Mock(return_value="done")
+
+    async def before(name: str, args: dict[str, object]) -> None:
+        assert name == "echo"
+        assert args == {"text": "original", "repeat": 1}
+        args["text"] = "changed"
+
+    result = await _registry(handler).execute("echo", '{"text":"original"}', before_execute=before)
+
+    assert result.output == "done"
+    handler.assert_called_once_with(text="original", repeat=1)
+
+
+async def test_hook_denial_returns_its_observation_without_invoking_handler() -> None:
+    handler = Mock(side_effect=AssertionError("拒绝后不得执行"))
+    denied = ToolResult(
+        status=ToolStatus.ERROR,
+        output={"reason": "permission_denied", "execution": "not_started", "error": "拒绝"},
+    )
+    before = AsyncMock(return_value=denied)
+
+    result = await _registry(handler).execute("echo", '{"text":"hello"}', before_execute=before)
+
+    assert result is denied
+    before.assert_awaited_once_with("echo", {"text": "hello", "repeat": 1})
+    handler.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [RuntimeError("审批内部错误"), asyncio.CancelledError()])
+async def test_hook_failure_or_cancellation_propagates_without_execution(
+    error: BaseException,
+) -> None:
+    handler = Mock(side_effect=AssertionError("审批未完成不得执行"))
+    before = AsyncMock(side_effect=error)
+
+    with pytest.raises(type(error)) as caught:
+        await _registry(handler).execute("echo", '{"text":"hello"}', before_execute=before)
+
+    assert caught.value is error
+    handler.assert_not_called()

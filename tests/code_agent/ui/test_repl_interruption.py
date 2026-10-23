@@ -18,6 +18,7 @@ from code_agent.core.agent import Agent
 from code_agent.events import RunResult, TextDelta
 from code_agent.tools.registry import ToolRegistry
 from code_agent.ui import repl
+from tests.code_agent.helpers import make_agent
 
 
 @pytest.fixture
@@ -174,7 +175,7 @@ async def test_cancelled_model_stream_can_resume_without_partial_history(
                     choices=[{"delta": {"content": "RECOVERED"}, "finish_reason": "stop"}]
                 )
 
-    agent = Agent(FakeLLM(), ToolRegistry(), workspace_dir=tmp_path)
+    agent = make_agent(FakeLLM(), ToolRegistry(), workspace_dir=tmp_path)
     output = StringIO()
     result = await repl.run_session(
         agent,

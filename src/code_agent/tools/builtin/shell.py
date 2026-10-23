@@ -6,15 +6,16 @@ import os
 import signal
 import subprocess
 import sys
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
-from typing import Mapping, Any
+from typing import Any
 
 import psutil
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from code_agent.events import ToolResult, ToolStatus
-from code_agent.safety.permission import check_command, Decision
+from code_agent.safety.permission import Decision, check_command
 
 MAX_OUTPUT_CHARS = 20_000
 OUTPUT_READ_CHUNK_BYTES = 4096
@@ -61,15 +62,6 @@ async def run_bash(
     非零退出保留为 COMPLETED；超时返回 TIMED_OUT 和已收集的输出。
     超时或取消时清理进程，取消完成清理后继续传播。
     """
-
-    # 首先对命令的安全性进行检查
-    decision = check_command(command)
-    if decision is Decision.DENY:
-        return ToolResult(error="command_denied", reason="命中硬拒绝规则")
-    if decision in Decision.ASK:
-        if not prompt_user(command):
-            return ToolResult(error="user_denied", reason="用户拒绝")
-
     bash_path = "bash" if bash_path is None else bash_path
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
     try:
@@ -291,5 +283,3 @@ class BashApprovalPolicy:
 
     def describe(self, args: Mapping[str, Any]) -> str:
         return f"bash 命令：{args.get('command', '')}"
-
-

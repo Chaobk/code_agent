@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from code_agent import __version__
+from code_agent.approval.prompt import prompt_decision
 from code_agent.config import Settings, load_settings
 from code_agent.core.agent import create_agent
 from code_agent.ui import repl
@@ -83,7 +84,7 @@ async def _run_interactive(settings: Settings) -> int:
     renderer = EventRenderer(console=console)
 
     try:
-        agent = create_agent(settings)
+        agent = create_agent(settings, prompt_fn=prompt_decision)
     except ValueError as exc:
         renderer.render_error(f"执行环境配置错误：{exc}")
         return 1

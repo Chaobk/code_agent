@@ -4,10 +4,13 @@
 """
 
 from __future__ import annotations
-from typing import Any, Callable, Mapping
-from policy import ApprovalPolicy
-from prompt import prompt_decision
+
+from collections.abc import Callable, Mapping
+from typing import Any
+
 from code_agent.safety.permission import Decision
+
+from .policy import ApprovalPolicy
 
 
 class ApprovalGate:
@@ -18,7 +21,10 @@ class ApprovalGate:
     - 用户选 'a' 时把 (tool_name, scope_key) 写入缓存
     """
 
-    def __init__(self, prompt_fn: Callable[[str], str] = prompt_decision, ) -> None:
+    def __init__(
+        self,
+        prompt_fn: Callable[[str], str] | None = None,
+    ) -> None:
         self._prompt = prompt_fn
         self._approved: set[tuple[str, str]] = set()
 
@@ -41,6 +47,8 @@ class ApprovalGate:
         if scope in self._approved:
             return True, ""
 
+        if self._prompt is None:
+            return False, "当前入口不能进行交互确认"
         choice = self._prompt(policy.describe(args))
 
         if choice == "o":

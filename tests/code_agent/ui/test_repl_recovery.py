@@ -16,6 +16,7 @@ from rich.console import Console
 from code_agent.core.agent import Agent
 from code_agent.tools.registry import ToolRegistry
 from code_agent.ui import repl
+from tests.code_agent.helpers import make_agent
 
 
 def _chunk(
@@ -70,7 +71,7 @@ async def test_failure_then_next_input_preserves_only_committed_history(
             [_chunk(content="RECOVERED", finish_reason="stop")],
         ]
     )
-    agent = Agent(client, ToolRegistry(), max_steps=2, workspace_dir=tmp_path)
+    agent = make_agent(client, ToolRegistry(), max_steps=2, workspace_dir=tmp_path)
     history = agent.history
     output = StringIO()
     result = await repl.run_session(
@@ -103,7 +104,7 @@ async def test_exhausted_run_then_next_input_receives_full_step_budget(tmp_path:
             [_chunk(content="RECOVERED", finish_reason="stop")],
         ]
     )
-    agent = Agent(client, ToolRegistry(), max_steps=2, workspace_dir=tmp_path)
+    agent = make_agent(client, ToolRegistry(), max_steps=2, workspace_dir=tmp_path)
     output = StringIO()
     result = await repl.run_session(
         agent,

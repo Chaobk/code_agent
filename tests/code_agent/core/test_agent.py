@@ -34,6 +34,7 @@ from code_agent.tools import builtin as builtin_module
 from code_agent.tools.builtin import shell as shell_module
 from code_agent.tools.registry import ToolRegistry
 from code_agent.tools.spec import ToolSpec
+from tests.code_agent.helpers import make_agent
 
 
 class EchoArgs(BaseModel):
@@ -158,7 +159,7 @@ async def test_run_returns_final_answer_and_sends_serializable_tools(
     registry: ToolRegistry, handler: Mock
 ) -> None:
     client = FakeLLM([final_response("最终答案")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("回答问题") == RunResult(status="completed", text="最终答案")
 
@@ -197,7 +198,7 @@ async def test_run_finishes_on_normal_response_without_tool_calls(
     # LiteLLM 构造器会将 [] 归一化为 None，显式保留空列表以覆盖两种表示。
     response.choices[0].message.tool_calls = empty_calls
     client = FakeLLM([response])
-    agent = Agent(client, registry, max_steps=2, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, max_steps=2, workspace_dir=Path.cwd())
 
     assert await agent.run("执行任务") == (RunResult(status="completed", text=content or ""))
 
@@ -214,7 +215,7 @@ async def test_run_preserves_final_text_including_whitespace_and_old_marker(
     """最终正文原样返回，旧标记只是文本，不删除末行或空白。"""
     content = "  已完成修改。\n示例：END_TASK\nEND_TASK\n\n"
     client = FakeLLM([assistant_response(content)])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("执行任务") == RunResult(status="completed", text=content)
 
@@ -233,7 +234,7 @@ async def test_run_returns_first_text_only_reply_without_requesting_another_turn
             assistant_response("继续分析。"),
         ]
     )
-    agent = Agent(client, registry, max_steps=2, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, max_steps=2, workspace_dir=Path.cwd())
 
     assert await agent.run("执行任务") == RunResult(status="completed", text="还在分析。")
     assert len(client.requests) == 1
@@ -245,7 +246,7 @@ async def test_run_accepts_final_answer_on_last_allowed_request(
 ) -> None:
     """最后一个允许的请求若正常收尾，应返回答案而不是步数上限错误。"""
     client = FakeLLM([tool_response([tool_call()]), final_response("任务完成")])
-    agent = Agent(client, registry, max_steps=2, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, max_steps=2, workspace_dir=Path.cwd())
 
     assert await agent.run("执行任务") == RunResult(status="completed", text="任务完成")
 
@@ -259,9 +260,9 @@ async def test_run_returns_completed_for_empty_final_content(
 ) -> None:
     client = FakeLLM([final_response(content)])
 
-    assert await Agent(client, registry, workspace_dir=Path.cwd()).run("回答问题") == RunResult(
-        status="completed", text=""
-    )
+    assert await make_agent(client, registry, workspace_dir=Path.cwd()).run(
+        "回答问题"
+    ) == RunResult(status="completed", text="")
     assert len(client.requests) == 1
 
 
@@ -278,7 +279,7 @@ async def test_run_replays_tool_result_before_returning_final_answer(
     response = tool_response([call], finish_reason=finish_reason)
     response.choices[0].message.content = content
     client = FakeLLM([response, final_response("已根据工具结果确认完成")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("调用工具并确认结果") == RunResult(
         status="completed", text="已根据工具结果确认完成"
@@ -307,7 +308,7 @@ async def test_run_replays_tool_failure_despite_same_turn_completion_claim(
     response = tool_response([tool_call()])
     response.choices[0].message.content = "工具执行成功。\nEND_TASK"
     client = FakeLLM([response, final_response("工具失败,需要说明原因")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("调用工具") == RunResult(
         status="completed", text="工具失败,需要说明原因"
@@ -327,7 +328,7 @@ async def test_run_includes_resolved_workspace_in_system_prompt(
 ) -> None:
     workspace = Path.cwd() / "sample-workspace"
     client = FakeLLM([final_response()])
-    agent = Agent(client, registry, workspace_dir=workspace / "child" / "..")
+    agent = make_agent(client, registry, workspace_dir=workspace / "child" / "..")
 
     await agent.run("查看工作空间")
 
@@ -364,7 +365,7 @@ async def test_default_bash_uses_configured_environment_and_exposes_only_command
     client = FakeLLM(
         [tool_response([tool_call(name="bash", arguments='{"command":"pwd"}')]), final_response()]
     )
-    agent = Agent(client, workspace_dir=settings.workspace_dir, bash_path=settings.bash_path)
+    agent = make_agent(client, workspace_dir=settings.workspace_dir, bash_path=settings.bash_path)
 
     await agent.run("查看当前目录")
 
@@ -393,7 +394,7 @@ async def test_default_bash_rejects_model_environment_overrides(
         [tool_response([tool_call(name="bash", arguments=arguments)]), final_response()]
     )
 
-    await Agent(client, workspace_dir=Path.cwd()).run("查看目录")
+    await make_agent(client, workspace_dir=Path.cwd()).run("查看目录")
 
     result = ToolResult.model_validate_json(client.requests[1]["messages"][-1]["content"])
     assert result.status == ToolStatus.ERROR
@@ -421,7 +422,7 @@ async def test_default_bash_bindings_are_independent_between_agents(
                 final_response(),
             ]
         )
-        agents.append(Agent(client, workspace_dir=Path(name), bash_path=f"{name}-bash"))
+        agents.append(make_agent(client, workspace_dir=Path(name), bash_path=f"{name}-bash"))
 
     for agent in agents:
         await agent.run("查看目录")
@@ -438,7 +439,7 @@ async def test_run_executes_tool_and_replays_call_and_result(
 ) -> None:
     call = tool_call(arguments='{"text":"你好","repeat":2}')
     client = FakeLLM([tool_response([call]), final_response("收到工具结果")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("使用工具") == RunResult(status="completed", text="收到工具结果")
 
@@ -470,9 +471,9 @@ async def test_run_awaits_async_tool_and_serializes_result() -> None:
     registry.register(ToolSpec("echo", "异步回显", EchoArgs, handler))
     client = FakeLLM([tool_response([tool_call()]), final_response("收到结果")])
 
-    assert await Agent(client, registry, workspace_dir=Path.cwd()).run("调用异步工具") == RunResult(
-        status="completed", text="收到结果"
-    )
+    assert await make_agent(client, registry, workspace_dir=Path.cwd()).run(
+        "调用异步工具"
+    ) == RunResult(status="completed", text="收到结果")
 
     content = client.requests[1]["messages"][-1]["content"]
     assert isinstance(content, str)
@@ -492,7 +493,7 @@ async def test_run_replays_all_tool_results_before_next_request(
     ]
     client = FakeLLM([tool_response(calls), final_response()])
 
-    await Agent(client, registry, workspace_dir=Path.cwd()).run("调用两个工具")
+    await make_agent(client, registry, workspace_dir=Path.cwd()).run("调用两个工具")
 
     assert len(client.requests) == 2
     assert [call.kwargs for call in handler.call_args_list] == [
@@ -520,7 +521,7 @@ async def test_run_returns_unknown_tool_error_to_model(
 ) -> None:
     client = FakeLLM([tool_response([tool_call(name="unknown")]), final_response()])
 
-    await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
+    await make_agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
 
     result = client.requests[1]["messages"][-1]
     assert result["role"] == "tool"
@@ -542,7 +543,7 @@ async def test_run_returns_argument_validation_error_without_executing_tool(
 ) -> None:
     client = FakeLLM([tool_response([tool_call(arguments=arguments)]), final_response()])
 
-    await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
+    await make_agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
 
     result = client.requests[1]["messages"][-1]
     assert result["role"] == "tool"
@@ -563,9 +564,9 @@ async def test_run_returns_tool_execution_error_to_model(
     )
     client = FakeLLM([tool_response([tool_call()]), final_response("已处理错误")])
 
-    assert await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具") == RunResult(
-        status="completed", text="已处理错误"
-    )
+    assert await make_agent(client, registry, workspace_dir=Path.cwd()).run(
+        "调用工具"
+    ) == RunResult(status="completed", text="已处理错误")
 
     result = client.requests[1]["messages"][-1]
     assert result["tool_call_id"] == "call_1"
@@ -582,7 +583,7 @@ async def test_run_stops_at_max_steps(registry: ToolRegistry, handler: Mock) -> 
         [tool_response([tool_call(f"call_{index}")]) for index in range(3)]
         + [final_response("不应请求这一轮")]
     )
-    agent = Agent(client, registry, max_steps=3, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, max_steps=3, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
 
     result = await agent.run("重复调用工具", on_event=events.append)
@@ -606,7 +607,7 @@ async def test_run_rejects_abnormal_response_without_executing_tool(
     response = tool_response([tool_call()] if has_tool_calls else [], finish_reason=finish_reason)
     response.choices[0].message.content = "任务完成"
     client = FakeLLM([response])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
 
     result = await agent.run("调用工具", on_event=events.append)
@@ -631,7 +632,7 @@ async def test_run_rejects_tool_finish_without_calls(
     response.choices[0].message.tool_calls = empty_calls
     client = FakeLLM([response])
 
-    result = await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
+    result = await make_agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
     assert result.status == "failed"
     assert "没有返回调用信息" in result.error
 
@@ -645,7 +646,7 @@ async def test_run_propagates_model_request_error(registry: ToolRegistry, handle
     events: list[AnyEvent] = []
 
     with pytest.raises(RuntimeError, match="模型请求失败") as caught:
-        await Agent(client, registry, workspace_dir=Path.cwd()).run(
+        await make_agent(client, registry, workspace_dir=Path.cwd()).run(
             "回答问题", on_event=events.append
         )
 
@@ -658,7 +659,7 @@ async def test_run_propagates_model_request_error(registry: ToolRegistry, handle
 async def test_run_propagates_tool_cancellation(registry: ToolRegistry, handler: Mock) -> None:
     handler.side_effect = asyncio.CancelledError()
     client = FakeLLM([tool_response([tool_call()]), final_response("不应继续请求")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     with pytest.raises(asyncio.CancelledError):
         await agent.run("调用工具")
@@ -701,7 +702,7 @@ async def test_internal_tool_failure_settles_batch_without_more_actions(error: E
             final_response("不得请求"),
         ]
     )
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
 
     with pytest.raises(type(error)) as caught:
@@ -730,7 +731,7 @@ async def test_renderer_failure_is_fatal_and_not_called_again(
     response = tool_response([tool_call("first"), tool_call("remaining")])
     response.choices[0].message.content = "部分正文"
     client = FakeLLM([response, final_response("不得请求")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     failure = Timeout(message="RENDER_FAILED", model="test", llm_provider="deepseek")
     event_class = {"text": TextDelta, "call": ToolCallEvent, "result": ToolResultEvent}[boundary]
     failed = False
@@ -779,7 +780,7 @@ async def test_renderer_failure_closes_model_stream(registry: ToolRegistry) -> N
             finally:
                 closed = True
 
-    agent = Agent(StreamingLLM(), registry, workspace_dir=Path.cwd())
+    agent = make_agent(StreamingLLM(), registry, workspace_dir=Path.cwd())
     with pytest.raises(RuntimeError, match="RENDER_FAILED"):
         await agent.run("输出", on_event=Mock(side_effect=RuntimeError("RENDER_FAILED")))
     assert closed
@@ -817,7 +818,7 @@ async def test_run_emits_tool_results_after_commit_in_execution_order() -> None:
         for index, text in enumerate(["first", "second"])
     ]
     client = FakeLLM([tool_response(calls), final_response("已处理观察")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     def on_event(event: AnyEvent) -> None:
         if isinstance(event, ToolCallEvent):
@@ -858,7 +859,7 @@ async def test_run_returns_completed_after_final_text(
     registry: ToolRegistry, handler: Mock, content: str | None
 ) -> None:
     client = FakeLLM([final_response(content)])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
 
     assert await agent.run("回答问题", on_event=events.append) == (
@@ -897,7 +898,7 @@ async def test_run_emits_paired_error_observation_and_continues(
     client = FakeLLM(
         [tool_response([tool_call("failed", name, arguments)]), final_response("已根据错误收尾")]
     )
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     results: list[ToolResultEvent] = []
     events: list[AnyEvent] = []
 
@@ -947,7 +948,7 @@ async def test_run_pairs_cancelled_batch_and_can_resume(cancel_index: int) -> No
         for index, text in enumerate(texts)
     ]
     client = FakeLLM([tool_response(calls), final_response("resumed")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
 
     def on_event(event: AnyEvent) -> None:
@@ -1060,7 +1061,7 @@ async def test_run_stops_after_bash_cancellation_even_when_cleanup_fails(
             final_response("不应在取消后继续请求"),
         ]
     )
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
     task = asyncio.create_task(agent.run("execute batch", on_event=events.append))
 
@@ -1128,7 +1129,7 @@ async def test_run_preserves_observation_from_cancelled_tool() -> None:
             )
         ]
     )
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     result_events: list[ToolResultEvent] = []
     events: list[AnyEvent] = []
 
@@ -1162,7 +1163,7 @@ async def test_run_preserves_history_between_user_turns(
     registry: ToolRegistry, handler: Mock
 ) -> None:
     client = FakeLLM([final_response("第一轮答案"), final_response("第二轮答案")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("第一轮问题") == RunResult(status="completed", text="第一轮答案")
     assert await agent.run("第二轮问题") == RunResult(status="completed", text="第二轮答案")
@@ -1190,7 +1191,7 @@ async def test_run_executes_sync_tool_outside_event_loop_thread(
     handler.side_effect = record_thread
     client = FakeLLM([tool_response([tool_call()]), final_response()])
 
-    await Agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
+    await make_agent(client, registry, workspace_dir=Path.cwd()).run("调用工具")
 
     assert len(executed_threads) == 1
     assert executed_threads[0] != event_loop_thread
@@ -1229,7 +1230,7 @@ async def test_run_assembles_text_and_consumes_trailing_usage(
             ]
         ]
     )
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("回答问题") == RunResult(status="completed", text="  分片正文\n")
 
@@ -1263,7 +1264,7 @@ async def test_run_executes_interleaved_calls_once_in_index_order(
             final_response("观察已齐全"),
         ]
     )
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
 
     assert await agent.run("执行两个工具") == RunResult(status="completed", text="观察已齐全")
 
@@ -1301,7 +1302,7 @@ async def test_run_waits_for_stream_exhaustion_before_committing_or_executing(
                     yield chunk
 
     client = TailLLM([final_response("完成")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     task = asyncio.create_task(agent.run("调用工具"))
     try:
         await asyncio.wait_for(at_tail.wait(), timeout=5)
@@ -1342,7 +1343,7 @@ async def test_run_discards_failed_stream_and_preserves_prior_observations(
             final_response("继续成功"),
         ]
     )
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
 
     with pytest.raises(error_type) as caught:
@@ -1413,7 +1414,7 @@ async def test_run_rejects_protocol_failure_without_commit_or_execution(
     error_match: str,
 ) -> None:
     client = FakeLLM([chunks, final_response("恢复成功")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
 
     result = await agent.run("执行任务", on_event=events.append)
@@ -1442,7 +1443,7 @@ async def test_run_returns_sdk_failure_without_committing_or_executing(
         error,
     ]
     client = FakeLLM([error if phase == "request" else interrupted_stream])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
 
     result = await agent.run("执行任务", on_event=events.append)
@@ -1477,7 +1478,7 @@ async def test_run_cancels_inflight_stream_without_committing_or_executing(
                     yield chunk
 
     client = BlockingLLM([final_response("取消后继续")])
-    agent = Agent(client, registry, workspace_dir=Path.cwd())
+    agent = make_agent(client, registry, workspace_dir=Path.cwd())
     events: list[AnyEvent] = []
     task = asyncio.create_task(agent.run("调用工具", on_event=events.append))
     try:

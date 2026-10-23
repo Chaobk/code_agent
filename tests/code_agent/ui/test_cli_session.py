@@ -103,7 +103,7 @@ async def test_interactive_entry_creates_one_agent_and_passes_console(
 
     assert await cli._run_interactive(settings) == 0
 
-    create.assert_called_once_with(settings)
+    create.assert_called_once_with(settings, prompt_fn=cli.prompt_decision)
     session.assert_awaited_once_with(agent, console=cli.console)
 
 
@@ -143,5 +143,5 @@ def test_interactive_creation_error_is_visible_once(
     assert result.exit_code == 1
     assert result.stdout.count("执行环境配置错误") == 1
     assert result.stdout.count("workspace_dir 无效") == 1
-    create.assert_called_once_with(settings)
+    create.assert_called_once_with(settings, prompt_fn=cli.prompt_decision)
     session.assert_not_awaited()

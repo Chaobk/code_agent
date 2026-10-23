@@ -1,9 +1,14 @@
 from __future__ import annotations
-from typing import Any, Mapping, Protocol
+
+from collections.abc import Mapping
+from typing import Any, Protocol
+
 from code_agent.safety.permission import Decision
+
 
 class ApprovalPolicy(Protocol):
     """审批策略协议。每个需要审批的工具实现这三个方法"""
+
     def evaluate(self, args: Mapping[str, Any]) -> Decision:
         pass
 

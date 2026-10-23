@@ -2,12 +2,19 @@
 
 import asyncio
 import inspect
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from typing import Any
 
 from pydantic import ValidationError
 
 from code_agent.events import ToolResult, ToolStatus
 from code_agent.tools.spec import ToolSpec
+
+BeforeExecute = Callable[
+    [str, dict[str, Any]],
+    Awaitable[ToolResult | None],
+]
 
 
 class ToolRegistry:
@@ -29,7 +36,9 @@ class ToolRegistry:
             res.append(tool.to_schema())
         return res
 
-    async def execute(self, name: str, arguments: str) -> ToolResult:
+    async def execute(
+        self, name: str, arguments: str, *, before_execute: BeforeExecute
+    ) -> ToolResult:
         """校验 JSON 参数并执行工具，返回统一的 ToolResult。
 
         未知工具和参数错误返回 ERROR；handler 的内部异常和取消原样传播。
@@ -48,6 +57,11 @@ class ToolRegistry:
 
         handler = spec.handler
         kwargs = args.model_dump()
+
+        blocked = await before_execute(name, deepcopy(kwargs))
+        if blocked is not None:
+            return blocked
+
         if inspect.iscoroutinefunction(handler):
             result = await handler(**kwargs)
         else:

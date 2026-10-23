@@ -15,6 +15,7 @@ from code_agent.core.agent import Agent
 from code_agent.events import RunResult, TextDelta
 from code_agent.tools.registry import ToolRegistry
 from code_agent.ui import repl
+from tests.code_agent.helpers import make_agent
 
 
 @pytest.mark.parametrize("inputs", [["/exit"], ["  /exit  "], [EOFError()]])
@@ -111,7 +112,7 @@ class FakeLLM:
 
 async def test_two_runs_reuse_history_and_each_receive_full_step_budget(tmp_path: Path) -> None:
     client = FakeLLM()
-    agent = Agent(client, ToolRegistry(), max_steps=2, workspace_dir=tmp_path)
+    agent = make_agent(client, ToolRegistry(), max_steps=2, workspace_dir=tmp_path)
     original_history = agent.history
     original_registry = agent.registry
     output = StringIO()
