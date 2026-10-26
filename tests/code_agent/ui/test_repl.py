@@ -8,7 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from litellm.types.utils import ModelResponseStream
+from openai.types.chat import ChatCompletionChunk
 from rich.console import Console
 
 from code_agent.core.agent import Agent
@@ -16,6 +16,7 @@ from code_agent.events import RunResult, TextDelta
 from code_agent.tools.registry import ToolRegistry
 from code_agent.ui import repl
 from tests.code_agent.helpers import make_agent
+from tests.code_agent.llm_helpers import make_chunk
 
 
 @pytest.mark.parametrize("inputs", [["/exit"], ["  /exit  "], [EOFError()]])
@@ -87,7 +88,7 @@ class FakeLLM:
 
     async def stream_turn(
         self, messages: list[dict[str, Any]], **kwargs: Any
-    ) -> AsyncIterator[ModelResponseStream]:
+    ) -> AsyncIterator[ChatCompletionChunk]:
         self.requests.append(deepcopy(messages))
         request_number = len(self.requests)
         if request_number in (1, 3):
@@ -107,7 +108,7 @@ class FakeLLM:
             finish_reason = "stop"
         else:
             raise AssertionError("会话产生了额外模型请求")
-        yield ModelResponseStream(choices=[{"delta": delta, "finish_reason": finish_reason}])
+        yield make_chunk(choices=[{"delta": delta, "finish_reason": finish_reason}])
 
 
 async def test_two_runs_reuse_history_and_each_receive_full_step_budget(tmp_path: Path) -> None:

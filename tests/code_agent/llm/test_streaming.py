@@ -3,17 +3,16 @@
 from typing import Any
 
 import pytest
-from litellm.types.utils import ModelResponseStream
+from openai.types.chat import ChatCompletionChunk
 
 from code_agent.llm.streaming import ModelProtocolError, TurnAssembler
+from tests.code_agent.llm_helpers import make_chunk
 
 
 def text_chunk(
     content: str | None = None, *, finish_reason: str | None = None
-) -> ModelResponseStream:
-    return ModelResponseStream(
-        choices=[{"delta": {"content": content}, "finish_reason": finish_reason}]
-    )
+) -> ChatCompletionChunk:
+    return make_chunk(choices=[{"delta": {"content": content}, "finish_reason": finish_reason}])
 
 
 def test_push_returns_only_new_text_and_finish_preserves_full_content() -> None:
@@ -41,7 +40,7 @@ def test_text_and_finish_reason_in_same_chunk_are_both_processed() -> None:
 def test_role_only_and_empty_text_chunks_do_not_produce_text() -> None:
     assembler = TurnAssembler()
 
-    assert assembler.push(ModelResponseStream(choices=[{"delta": {"role": "assistant"}}])) is None
+    assert assembler.push(make_chunk(choices=[{"delta": {"role": "assistant"}}])) is None
     assert assembler.push(text_chunk("")) is None
     assert assembler.push(text_chunk(finish_reason="stop")) is None
     assert assembler.finish().message == {"role": "assistant", "content": ""}
@@ -50,11 +49,11 @@ def test_role_only_and_empty_text_chunks_do_not_produce_text() -> None:
 def test_empty_choices_including_trailing_usage_do_not_change_turn() -> None:
     assembler = TurnAssembler()
 
-    assert assembler.push(ModelResponseStream(choices=[])) is None
+    assert assembler.push(make_chunk(choices=[])) is None
     assert assembler.push(text_chunk("你好", finish_reason="stop")) == "你好"
     assert (
         assembler.push(
-            ModelResponseStream(
+            make_chunk(
                 choices=[],
                 usage={"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
             )
@@ -95,8 +94,8 @@ def tool_chunk(
     *fragments: dict[str, Any],
     content: str | None = None,
     finish_reason: str | None = None,
-) -> ModelResponseStream:
-    return ModelResponseStream(
+) -> ChatCompletionChunk:
+    return make_chunk(
         choices=[
             {
                 "delta": {"content": content, "tool_calls": list(fragments)},
@@ -161,10 +160,12 @@ def test_invalid_tool_type_is_rejected() -> None:
     assembler.push(
         tool_chunk(tool_fragment(0, "", call_id="call_1", name="bash", call_type="function"))
     )
-    invalid = tool_fragment(0, "", call_type="other")
+    invalid = tool_chunk(tool_fragment(0, "", call_type="function"))
+    # SDK 的网络解析不强制校验字面量；模拟服务端返回未知类型。
+    invalid.choices[0].delta.tool_calls[0].type = "other"
 
     with pytest.raises(ModelProtocolError, match="类型"):
-        assembler.push(tool_chunk(invalid))
+        assembler.push(invalid)
 
 
 @pytest.mark.parametrize("finish_reason", ["length", "content_filter"])

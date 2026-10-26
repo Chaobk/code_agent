@@ -22,12 +22,12 @@ class Settings(BaseSettings):
     api_key: str = Field(
         default="",
         validation_alias=AliasChoices("DEEPSEEK_API_KEY"),
-        description="DeepSeek API Key;留空则交给 litellm 自己从环境变量读取",
+        description="模型服务 API Key，从 DEEPSEEK_API_KEY 读取",
     )
     base_url: str = Field(default="https://api.deepseek.com", description="API base url")
     model: str = Field(
-        default="deepseek/deepseek-chat",
-        description="litellm 模型标识(带供应商前缀)",
+        default="deepseek-chat",
+        description="服务端模型名称，不含供应商路由前缀",
     )
     max_steps: int = Field(default=30, ge=1, description="单次任务的最大模型请求轮数")
 

@@ -71,7 +71,7 @@ src/code_agent/
 ├── config.py       # J 配置
 ├── events.py       # 全系统共享的事件与消息模型
 ├── core/           # 编排器(唯一把各能力串起来的地方)
-├── llm/            # A 模型层(litellm)
+├── llm/            # A 模型层(OpenAI SDK，连接 OpenAI 兼容服务)
 ├── modes/          # E 模式:react / plan
 ├── tools/          # D 工具系统
 ├── context/        # B 上下文管理

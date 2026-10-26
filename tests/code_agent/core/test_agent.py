@@ -11,9 +11,10 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
-from litellm import Timeout
-from litellm.types.utils import ModelResponse, ModelResponseStream
+from openai import APITimeoutError
+from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_agent.config import Settings
@@ -29,12 +30,12 @@ from code_agent.events import (
     ToolResultEvent,
     ToolStatus,
 )
-from code_agent.llm import client as client_module
 from code_agent.tools import builtin as builtin_module
 from code_agent.tools.builtin import shell as shell_module
 from code_agent.tools.registry import ToolRegistry
 from code_agent.tools.spec import ToolSpec
 from tests.code_agent.helpers import make_agent
+from tests.code_agent.llm_helpers import make_chunk, make_completion
 
 
 class EchoArgs(BaseModel):
@@ -49,14 +50,15 @@ class FakeLLM:
 
     def __init__(
         self,
-        responses: list[ModelResponse | BaseException | list[ModelResponseStream | BaseException]],
+        responses: list[ChatCompletion | BaseException | list[ChatCompletionChunk | BaseException]],
     ) -> None:
         self._responses = iter(responses)
         self.requests: list[dict[str, Any]] = []
+        self.close = AsyncMock()
 
     async def stream_turn(
         self, messages: list[dict[str, Any]], **kwargs: Any
-    ) -> AsyncIterator[ModelResponseStream]:
+    ) -> AsyncIterator[ChatCompletionChunk]:
         self.requests.append(deepcopy({"messages": messages, **kwargs}))
         try:
             response = next(self._responses)
@@ -64,7 +66,7 @@ class FakeLLM:
             raise AssertionError("Agent 发起了预期之外的模型请求") from exc
         if isinstance(response, BaseException):
             raise response
-        if isinstance(response, ModelResponse):
+        if isinstance(response, ChatCompletion):
             choice = response.choices[0]
             message = choice.message
             delta: dict[str, Any] = {"role": "assistant", "content": message.content}
@@ -74,9 +76,7 @@ class FakeLLM:
                     for index, call in enumerate(message.tool_calls)
                 ]
             response = [
-                ModelResponseStream(
-                    choices=[{"delta": delta, "finish_reason": choice.finish_reason}]
-                )
+                make_chunk(choices=[{"delta": delta, "finish_reason": choice.finish_reason}])
             ]
         for chunk in response:
             if isinstance(chunk, BaseException):
@@ -84,9 +84,9 @@ class FakeLLM:
             yield chunk
 
 
-def assistant_response(content: str | None) -> ModelResponse:
+def assistant_response(content: str | None) -> ChatCompletion:
     """正常结束且没有工具调用的助手响应。"""
-    return ModelResponse(
+    return make_completion(
         choices=[
             {
                 "finish_reason": "stop",
@@ -96,7 +96,7 @@ def assistant_response(content: str | None) -> ModelResponse:
     )
 
 
-def final_response(content: str | None = "任务完成") -> ModelResponse:
+def final_response(content: str | None = "任务完成") -> ChatCompletion:
     """最终响应通过正常结束和无工具调用表达收尾，不附加文本标记。"""
     return assistant_response(content)
 
@@ -113,8 +113,8 @@ def tool_call(
 
 def tool_response(
     calls: list[dict[str, Any]], *, finish_reason: str = "tool_calls"
-) -> ModelResponse:
-    return ModelResponse(
+) -> ChatCompletion:
+    return make_completion(
         choices=[
             {
                 "finish_reason": finish_reason,
@@ -131,16 +131,6 @@ def _assert_tool_result_is_committed(agent: Agent, event: ToolResultEvent) -> No
     assert message["tool_call_id"] == event.tool_call_id
     assert ToolResult.model_validate_json(message["content"]) == event.tool_result
     assert event.tool_call_id not in agent.history.get_pending_calls()
-
-
-@pytest.fixture(autouse=True)
-def block_model_requests(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("acompletion", "aresponses"):
-        monkeypatch.setattr(
-            client_module.litellm,
-            name,
-            AsyncMock(side_effect=AssertionError("Agent 单测不得访问真实模型")),
-        )
 
 
 @pytest.fixture
@@ -195,7 +185,7 @@ async def test_run_finishes_on_normal_response_without_tool_calls(
 ) -> None:
     """无工具调用的正常回复立即返回，正文含义和旧标记不改变结束判断。"""
     response = assistant_response(content)
-    # LiteLLM 构造器会将 [] 归一化为 None，显式保留空列表以覆盖两种表示。
+    # 显式覆盖，分别验证空列表和 None 两种无调用表示。
     response.choices[0].message.tool_calls = empty_calls
     client = FakeLLM([response])
     agent = make_agent(client, registry, max_steps=2, workspace_dir=Path.cwd())
@@ -732,7 +722,7 @@ async def test_renderer_failure_is_fatal_and_not_called_again(
     response.choices[0].message.content = "部分正文"
     client = FakeLLM([response, final_response("不得请求")])
     agent = make_agent(client, registry, workspace_dir=Path.cwd())
-    failure = Timeout(message="RENDER_FAILED", model="test", llm_provider="deepseek")
+    failure = APITimeoutError(request=httpx.Request("POST", "https://example.invalid"))
     event_class = {"text": TextDelta, "call": ToolCallEvent, "result": ToolResultEvent}[boundary]
     failed = False
 
@@ -743,7 +733,7 @@ async def test_renderer_failure_is_fatal_and_not_called_again(
             failed = True
             raise failure
 
-    with pytest.raises(Timeout) as caught:
+    with pytest.raises(APITimeoutError) as caught:
         await agent.run("执行工具", on_event=render)
 
     assert caught.value is failure
@@ -772,10 +762,10 @@ async def test_renderer_failure_closes_model_stream(registry: ToolRegistry) -> N
     class StreamingLLM:
         async def stream_turn(
             self, *args: Any, **kwargs: Any
-        ) -> AsyncIterator[ModelResponseStream]:
+        ) -> AsyncIterator[ChatCompletionChunk]:
             nonlocal closed
             try:
-                yield ModelResponseStream(choices=[{"delta": {"content": "partial"}}])
+                yield make_chunk(choices=[{"delta": {"content": "partial"}}])
                 raise AssertionError("不能在显示失败后继续读取")
             finally:
                 closed = True
@@ -1202,9 +1192,9 @@ def stream_chunk(
     *,
     calls: list[dict[str, Any]] | None = None,
     finish_reason: str | None = None,
-) -> ModelResponseStream:
+) -> ChatCompletionChunk:
     """构造原始分片；参数是否完整由组装器和注册表分别判断。"""
-    return ModelResponseStream(
+    return make_chunk(
         choices=[
             {
                 "delta": {"content": content, "tool_calls": calls},
@@ -1220,10 +1210,10 @@ async def test_run_assembles_text_and_consumes_trailing_usage(
     client = FakeLLM(
         [
             [
-                ModelResponseStream(choices=[{"delta": {"role": "assistant"}}]),
+                make_chunk(choices=[{"delta": {"role": "assistant"}}]),
                 stream_chunk("  分片"),
                 stream_chunk("正文\n", finish_reason="stop"),
-                ModelResponseStream(
+                make_chunk(
                     choices=[],
                     usage={"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
                 ),
@@ -1286,7 +1276,7 @@ async def test_run_waits_for_stream_exhaustion_before_committing_or_executing(
     class TailLLM(FakeLLM):
         async def stream_turn(
             self, messages: list[dict[str, Any]], **kwargs: Any
-        ) -> AsyncIterator[ModelResponseStream]:
+        ) -> AsyncIterator[ChatCompletionChunk]:
             if not self.requests:
                 self.requests.append(deepcopy({"messages": messages, **kwargs}))
                 yield stream_chunk(
@@ -1296,7 +1286,7 @@ async def test_run_waits_for_stream_exhaustion_before_committing_or_executing(
                 )
                 at_tail.set()
                 await release.wait()
-                yield ModelResponseStream(choices=[])
+                yield make_chunk(choices=[])
             else:
                 async for chunk in super().stream_turn(messages, **kwargs):
                     yield chunk
@@ -1410,7 +1400,7 @@ async def test_run_discards_failed_stream_and_preserves_prior_observations(
 async def test_run_rejects_protocol_failure_without_commit_or_execution(
     registry: ToolRegistry,
     handler: Mock,
-    chunks: list[ModelResponseStream],
+    chunks: list[ChatCompletionChunk],
     error_match: str,
 ) -> None:
     client = FakeLLM([chunks, final_response("恢复成功")])
@@ -1433,7 +1423,7 @@ async def test_run_rejects_protocol_failure_without_commit_or_execution(
 async def test_run_returns_sdk_failure_without_committing_or_executing(
     registry: ToolRegistry, handler: Mock, phase: str
 ) -> None:
-    error = Timeout(message="模型等待超时[bold]", model="test-model", llm_provider="deepseek")
+    error = APITimeoutError(request=httpx.Request("POST", "https://example.invalid"))
     interrupted_stream = [
         stream_chunk(
             "临时正文",
@@ -1447,7 +1437,7 @@ async def test_run_returns_sdk_failure_without_committing_or_executing(
     events: list[AnyEvent] = []
 
     result = await agent.run("执行任务", on_event=events.append)
-    assert result == RunResult(status="failed", error=f"Timeout: {error}")
+    assert result == RunResult(status="failed", error=f"APITimeoutError: {error}")
     assert [message["role"] for message in agent.history.get_model_messages()] == ["system", "user"]
     assert not any(isinstance(event, (ToolCallEvent, ToolResultEvent)) for event in events)
     assert len(client.requests) == 1
@@ -1464,7 +1454,7 @@ async def test_run_cancels_inflight_stream_without_committing_or_executing(
     class BlockingLLM(FakeLLM):
         async def stream_turn(
             self, messages: list[dict[str, Any]], **kwargs: Any
-        ) -> AsyncIterator[ModelResponseStream]:
+        ) -> AsyncIterator[ChatCompletionChunk]:
             if not self.requests:
                 self.requests.append(deepcopy({"messages": messages, **kwargs}))
                 try:

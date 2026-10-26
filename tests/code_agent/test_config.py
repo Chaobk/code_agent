@@ -34,7 +34,7 @@ def _settings() -> Settings:
 def test_defaults() -> None:
     settings = _settings()
     assert settings.api_key == ""
-    assert settings.model == "deepseek/deepseek-chat"
+    assert settings.model == "deepseek-chat"
     assert settings.base_url == "https://api.deepseek.com"
     assert settings.max_steps == 30
     assert settings.request_timeout_seconds == 60.0
@@ -69,10 +69,10 @@ def test_api_key_uses_deepseek_env_name(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_other_fields_use_code_agent_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CODE_AGENT_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.setenv("CODE_AGENT_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("CODE_AGENT_MAX_STEPS", "7")
     settings = _settings()
-    assert settings.model == "openai/gpt-4o-mini"
+    assert settings.model == "gpt-4o-mini"
     assert settings.max_steps == 7
 
 

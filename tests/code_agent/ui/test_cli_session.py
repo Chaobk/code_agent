@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from code_agent.config import Settings
 from code_agent.core.agent import Agent
+from code_agent.events import RunResult
 from code_agent.ui import cli, repl
 
 runner = CliRunner()
@@ -105,6 +106,37 @@ async def test_interactive_entry_creates_one_agent_and_passes_console(
 
     create.assert_called_once_with(settings, prompt_fn=cli.prompt_decision)
     session.assert_awaited_once_with(agent, console=cli.console)
+    agent.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+@pytest.mark.parametrize("outcome", ["completed", "error", "cancelled"])
+async def test_entry_closes_agent_on_every_exit(
+    monkeypatch: pytest.MonkeyPatch, interactive: bool, outcome: str
+) -> None:
+    settings = Settings(_env_file=None, DEEPSEEK_API_KEY="test-key")
+    agent = Mock(spec=Agent)
+    agent.run.return_value = RunResult(status="completed", text="完成")
+    session = AsyncMock(return_value=0)
+    operation = session if interactive else agent.run
+    error = RuntimeError("failed") if outcome == "error" else asyncio.CancelledError()
+    if outcome != "completed":
+        operation.side_effect = error
+    monkeypatch.setattr(cli, "create_agent", Mock(return_value=agent))
+    monkeypatch.setattr(repl, "run_session", session)
+    if outcome == "completed":
+        result = await (
+            cli._run_interactive(settings) if interactive else cli._run_once("test", settings)
+        )
+        assert result == 0
+    elif outcome == "error" and not interactive:
+        assert await cli._run_once("test", settings) == 1
+    else:
+        with pytest.raises(type(error)):
+            await (
+                cli._run_interactive(settings) if interactive else cli._run_once("test", settings)
+            )
+    agent.close.assert_awaited_once()
 
 
 @pytest.mark.parametrize("interactive", [False, True])

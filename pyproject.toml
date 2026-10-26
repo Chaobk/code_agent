@@ -5,7 +5,8 @@ description = "学习型编程 Agent:ReAct 循环 + 工具系统 + 记忆 + 命�
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "litellm>=1.75.5,!=1.82.7,!=1.82.8",
+    "openai>=2.54,<3",
+    "httpx>=0.28,<1",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "typer>=0.12",

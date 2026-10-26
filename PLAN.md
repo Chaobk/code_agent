@@ -1,5 +1,7 @@
 # code_agent 实施计划
 
+> 2026-10-26 用户授权 Codex 将模型接入从 LiteLLM 迁移为 OpenAI SDK，以减少启动导入与远程价格表等待。当前使用 Chat Completions，默认服务和密钥变量保持 DeepSeek；配置模型名改为 deepseek-chat，请求时兼容旧 deepseek/ 前缀。保留流式循环、历史结算与权限边界，显式关闭 SDK 自动重试并管理流和客户端资源；此项维护不推进里程碑验收。
+
 > 2026-10-23 进度更新。本文是当前进度、有效契约和后续学习安排的权威入口；追溯测试数量、独立靶子和旧决策时，阅读 [计划历史与验收记录](docs/plan-history.md)。
 > 2026-10-23 用户明确权限学习采用“先有，再做好”：简单策略、Gate、Registry 执行前接点及结果回灌已接线，完整自动化回归 352 项通过；Bash 语法解析、规则完善、授权范围细化与真实确认取消整合继续后置。基础版待用户验收，完整 M4c 未完成；本次不替代 M4b 的验收确认，证据与限制见计划历史。
 > 2026-10-21 手动验收发现 Git Bash 的 sleep 取消后输出收尾超时，用户授权 Codex 修复并要求精简。现用 Windows 独立控制台进程组与定向 CTRL_BREAK 替代 MSYS 进程表适配；完整回归 320 项通过，真实 TTY Ctrl+C 后再次执行 Bash 通过。适用范围为共享控制台的 CLI，不宣称强隔离；M4b 仍待用户确认，见 [故障与修复](docs/design/m4b-git-bash-cancellation.md)。
@@ -24,7 +26,7 @@
 | 决策 | 当前约定 |
 |---|---|
 | 工程 | Python 3.11+，本地开发版本 3.12；uv、src 布局、pytest、Ruff |
-| 模型接入 | LiteLLM 薄封装，默认 deepseek/deepseek-chat；Chat Completions，complete_turn 返回完整响应，stream_turn 原样产出 chunk |
+| 模型接入 | OpenAI SDK 薄封装，默认 DeepSeek 服务与 deepseek-chat；Chat Completions，complete_turn 返回 ChatCompletion，stream_turn 原样产出 ChatCompletionChunk |
 | 循环 | M0–M7 使用单 Agent、顺序工具执行；M8 增加独立子会话与委派 |
 | 交互 | -p 单次任务与终端多轮会话共用 RunResult；事件只显示实时正文、工具调用及结果，UI 根据等待结果显示结束原因 |
 | 执行环境 | Bash 路径与工作目录由应用绑定，每次调用独立进程，cd/export 不跨调用保留 |
@@ -114,14 +116,14 @@ core/agent.py 负责当前循环；llm/streaming.py 负责 M2b 模型响应分�
 | 工具已开始后取消 | 按 §4 记录已知观察、unknown 或 not_started，补齐配对后传播取消 |
 | 文字已显示但本轮随后失败 | UI 标明中断/失败；临时文字不冒充完整助手消息，不进入下一轮模型输入 |
 
-事件按需携带调用 ID 和 ToolResult，区分文本增量与完整消息，避免最终正文重复打印。明确模型请求超时的配置、透传和呈现，优先复用 LiteLLM 参数，不新增重试框架；失败后不自动重放有副作用的工具。保留 max_steps，重复/无进展策略按具体案例再设计。
+事件按需携带调用 ID 和 ToolResult，区分文本增量与完整消息，避免最终正文重复打印。明确模型请求超时的配置、透传和呈现，复用 SDK 的 timeout 参数，不新增重试框架；失败后不自动重放有副作用的工具。保留 max_steps，重复/无进展策略按具体案例再设计。
 
 **模型请求超时小步（已实现并通过自动化回归）。**
 
 - Settings 增加 `request_timeout_seconds`，默认 60.0 秒，只接受有限正数；环境变量为 `CODE_AGENT_REQUEST_TIMEOUT_SECONDS`。默认值是本项目的初始选择，可按服务响应情况调整。
-- LLMClient 的 `_request_kwargs` 将配置映射为 LiteLLM 的 `timeout`，非流式和流式路径共用；显式调用参数继续覆盖配置，覆盖不修改 Settings 或后续请求默认值。
-- 本步配置的是 SDK/HTTP 等待超时，不是整个请求、整个 Agent 运行或工具执行的总时长。当前 DeepSeek/OpenAI 兼容路径使用 HTTPX 的超时语义，读取阶段限制等待下一块响应数据的时间；持续到达数据时允许整体耗时超过该值。SDK 的 HTTP 数据块也不等同于组装器收到的正文片段。不新增总时长计时器或重试逻辑，不据此承诺严格的墙钟耗时上限。依据：[LiteLLM timeout 参数](https://docs.litellm.ai/docs/completion/input)、[HTTPX 超时说明](https://www.python-httpx.org/advanced/timeouts/)，已核对当前安装的 LiteLLM 1.103.2 调用路径。
-- LLMClient 原样传播 SDK 的 `litellm.Timeout`；核心在模型请求边界将已知 SDK 和 ModelProtocolError 转为 RunResult(failed)。请求建立前或部分分片后超时，本轮不提交助手消息、不执行调用；已有历史保留。CLI 显示一次原因并返回 1。内部或显示错误不降级成受控请求失败。
+- LLMClient 的 `_request_kwargs` 将配置映射为 OpenAI SDK 的 `timeout`，非流式和流式路径共用；显式调用参数继续覆盖配置，覆盖不修改 Settings 或后续请求默认值。SDK 使用 `max_retries=0`。
+- 本步配置的是 SDK/HTTP 等待超时，不是整个请求、整个 Agent 运行或工具执行的总时长。当前 DeepSeek/OpenAI 兼容路径使用 HTTPX 的超时语义，读取阶段限制等待下一块响应数据的时间；持续到达数据时允许整体耗时超过该值。SDK 的 HTTP 数据块也不等同于组装器收到的正文片段。不新增总时长计时器，不据此承诺严格的墙钟耗时上限。依据：[OpenAI Python SDK](https://developers.openai.com/api/reference/python)、[HTTPX 超时说明](https://www.python-httpx.org/advanced/timeouts/)，已核对当前安装的 OpenAI SDK 2.54.0 调用路径。
+- LLMClient 原样传播 SDK 的 `APITimeoutError`；读取 SSE 期间的原始 HTTPX 超时／连接异常分别转换为 `APITimeoutError`／`APIConnectionError`。核心在模型请求边界将 `APIError` 和 ModelProtocolError 转为 RunResult(failed)。请求建立前或部分分片后超时，本轮不提交助手消息、不执行调用；已有历史保留。CLI 显示一次原因并返回 1。内部或显示错误不降级成受控请求失败。
 - 配置校验、两种请求路径的透传/覆盖及真实 SDK 异常类型的回归测试已通过，配置字段与透传由用户实现。2026-10-16 完整回归 241 项通过。FakeLLM/AsyncMock 验证应用边界，不把模拟抛异常宣称为真实网络超时已验证；后续 smoke 再核实实际环境。
 
 **判据：**文本、交错调用、错误分类、事件顺序与取消测试通过；每个完整有效调用在本次执行流程中执行一次，协议失败执行零次，非法参数生成配对错误观察；部分文字后断流不会污染下一次模型输入，最终答案不重复显示。同一独立靶子通过流式路径完成代码修改、测试与 diff 复核。模式抽象、额外工具和成本报表不作为前置条件。
@@ -258,7 +260,7 @@ M4c 完整验收仍需覆盖真实确认与确认中取消，以及已有执行�
 
 ## 6. 工程、测试与验收材料
 
-- 依赖以 pyproject.toml/uv.lock 为准，保留 LiteLLM 版本下限与排除规则、psutil 约束；计划整理不改依赖锁。
+- 依赖以 pyproject.toml/uv.lock 为准；模型接入使用 OpenAI SDK 与 HTTPX，保留 psutil 约束。LiteLLM 及其版本排除规则随本次授权迁移移除；单纯计划整理不改依赖锁。
 - 凭据通过环境变量或已忽略的 .env 管理，禁止记录真实密钥。落盘轨迹前忽略 .code_agent/，限制敏感环境变量与日志内容。
 - 行为测试覆盖协议边界和真实副作用；Settings 使用 _env_file=None 并隔离相关环境变量。FakeLLM 测试不访问真实模型；纯文档调整不新增测试。
 - 手动 smoke、靶子、日志和生成文件放独立目录，不纳入提交，也不为此忽略所有 Markdown。可提交简洁的验收摘要与案例定义，不提交原始临时产物。

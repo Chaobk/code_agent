@@ -11,7 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from litellm.types.utils import ModelResponseStream
+from openai.types.chat import ChatCompletionChunk
 from rich.console import Console
 
 from code_agent.core.agent import Agent
@@ -19,6 +19,7 @@ from code_agent.events import RunResult, TextDelta
 from code_agent.tools.registry import ToolRegistry
 from code_agent.ui import repl
 from tests.code_agent.helpers import make_agent
+from tests.code_agent.llm_helpers import make_chunk
 
 
 @pytest.fixture
@@ -164,14 +165,14 @@ async def test_cancelled_model_stream_can_resume_without_partial_history(
     class FakeLLM:
         async def stream_turn(
             self, messages: list[dict[str, Any]], **kwargs: Any
-        ) -> AsyncIterator[ModelResponseStream]:
+        ) -> AsyncIterator[ChatCompletionChunk]:
             requests.append(deepcopy(messages))
             if len(requests) == 1:
-                yield ModelResponseStream(choices=[{"delta": {"content": "UNCOMMITTED"}}])
+                yield make_chunk(choices=[{"delta": {"content": "UNCOMMITTED"}}])
                 asyncio.get_running_loop().call_soon(_interrupt, install_handler)
                 await asyncio.Future()
             else:
-                yield ModelResponseStream(
+                yield make_chunk(
                     choices=[{"delta": {"content": "RECOVERED"}, "finish_reason": "stop"}]
                 )
 

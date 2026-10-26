@@ -8,20 +8,22 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
-from litellm import APIConnectionError
-from litellm.types.utils import ModelResponseStream
+from openai import APIConnectionError
+from openai.types.chat import ChatCompletionChunk
 from rich.console import Console
 
 from code_agent.core.agent import Agent
 from code_agent.tools.registry import ToolRegistry
 from code_agent.ui import repl
 from tests.code_agent.helpers import make_agent
+from tests.code_agent.llm_helpers import make_chunk
 
 
 def _chunk(
     *, content: str | None = None, tool_id: str | None = None, finish_reason: str | None = None
-) -> ModelResponseStream:
+) -> ChatCompletionChunk:
     delta: dict[str, Any] = {}
     if content is not None:
         delta["content"] = content
@@ -34,19 +36,19 @@ def _chunk(
                 "function": {"name": "unregistered", "arguments": "{}"},
             }
         ]
-    return ModelResponseStream(choices=[{"delta": delta, "finish_reason": finish_reason}])
+    return make_chunk(choices=[{"delta": delta, "finish_reason": finish_reason}])
 
 
 class ScriptedLLM:
     """按脚本产出分片或异常，保留每次模型输入的独立快照。"""
 
-    def __init__(self, turns: Sequence[Sequence[ModelResponseStream | BaseException]]) -> None:
+    def __init__(self, turns: Sequence[Sequence[ChatCompletionChunk | BaseException]]) -> None:
         self.turns = iter(turns)
         self.requests: list[list[dict[str, Any]]] = []
 
     async def stream_turn(
         self, messages: list[dict[str, Any]], **kwargs: Any
-    ) -> AsyncIterator[ModelResponseStream]:
+    ) -> AsyncIterator[ChatCompletionChunk]:
         self.requests.append(deepcopy(messages))
         for item in next(self.turns):
             if isinstance(item, BaseException):
@@ -58,11 +60,13 @@ class ScriptedLLM:
 async def test_failure_then_next_input_preserves_only_committed_history(
     tmp_path: Path, partial: bool
 ) -> None:
-    broken: list[ModelResponseStream | BaseException] = (
+    broken: list[ChatCompletionChunk | BaseException] = (
         [_chunk(content="UNCOMMITTED")] if partial else []
     )
     broken.append(
-        APIConnectionError(message="STREAM_FAILED", model="test", llm_provider="deepseek")
+        APIConnectionError(
+            message="STREAM_FAILED", request=httpx.Request("POST", "https://example.invalid")
+        )
     )
     client = ScriptedLLM(
         [

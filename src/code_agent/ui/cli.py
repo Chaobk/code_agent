@@ -70,6 +70,8 @@ async def _run_once(prompt: str, settings: Settings) -> int:
     except Exception as exc:
         renderer.render_error(f"{type(exc).__name__}: {exc}")
         return 1
+    finally:
+        await agent.close()
 
     return 0 if result.status == "completed" else 1
 
@@ -89,7 +91,10 @@ async def _run_interactive(settings: Settings) -> int:
         renderer.render_error(f"执行环境配置错误：{exc}")
         return 1
 
-    return await repl.run_session(agent, console=console)
+    try:
+        return await repl.run_session(agent, console=console)
+    finally:
+        await agent.close()
 
 
 def main() -> None:

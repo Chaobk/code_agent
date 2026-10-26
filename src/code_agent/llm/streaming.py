@@ -3,7 +3,8 @@
 from dataclasses import dataclass
 from typing import Any
 
-from litellm.types.utils import ChatCompletionDeltaToolCall, ModelResponseStream
+from openai.types.chat import ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
 
 
 class ModelProtocolError(RuntimeError):
@@ -26,7 +27,7 @@ class TurnAssembler:
         self._finish_reason: str | None = None
         self._calls_by_index: dict[int, dict[str, Any]] = {}
 
-    def push(self, chunk: ModelResponseStream) -> str | None:
+    def push(self, chunk: ChatCompletionChunk) -> str | None:
         if not chunk.choices:
             return None
 
@@ -48,7 +49,7 @@ class TurnAssembler:
 
         return text or None
 
-    def _merge_tool_fragment(self, fragment: ChatCompletionDeltaToolCall) -> None:
+    def _merge_tool_fragment(self, fragment: ChoiceDeltaToolCall) -> None:
         cached = self._calls_by_index.setdefault(
             fragment.index,
             {

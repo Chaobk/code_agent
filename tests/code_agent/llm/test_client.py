@@ -4,25 +4,20 @@ from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
-from litellm import Timeout
-from litellm.types.utils import ModelResponse, ModelResponseStream
+from openai import APITimeoutError
+from openai.types.chat import ChatCompletionChunk
 
 from code_agent.config import Settings
 from code_agent.llm import client as client_module
 from code_agent.llm.client import LLMClient
+from tests.code_agent.llm_helpers import make_chunk, make_completion
 
 
 @pytest.fixture(autouse=True)
 def block_model_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CODE_AGENT_REQUEST_TIMEOUT_SECONDS", raising=False)
-    # 每个测试必须显式模拟请求，避免错误实现访问真实服务。
-    for name in ("acompletion", "aresponses"):
-        monkeypatch.setattr(
-            client_module.litellm,
-            name,
-            AsyncMock(side_effect=AssertionError("测试不得访问真实模型")),
-        )
 
 
 @pytest.fixture
@@ -31,7 +26,7 @@ def client() -> LLMClient:
         Settings(
             _env_file=None,
             DEEPSEEK_API_KEY="test-key",
-            model="deepseek/deepseek-chat",
+            model="deepseek-chat",
             base_url="https://example.invalid",
         )
     )
@@ -58,7 +53,7 @@ def tools() -> list[dict[str, Any]]:
 async def test_complete_turn_returns_original_response_with_tool_calls_and_usage(
     monkeypatch: pytest.MonkeyPatch, client: LLMClient, tools: list[dict[str, Any]]
 ) -> None:
-    response = ModelResponse(
+    response = make_completion(
         choices=[
             {
                 "index": 0,
@@ -82,7 +77,7 @@ async def test_complete_turn_returns_original_response_with_tool_calls_and_usage
         usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     )
     request = AsyncMock(return_value=response)
-    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    monkeypatch.setattr(client_module.AsyncOpenAI.return_value, "request", request)
     messages = ({"role": "user", "content": "读取 README"},)
 
     result = await client.complete_turn(messages, tools=tools)
@@ -96,12 +91,10 @@ async def test_complete_turn_returns_original_response_with_tool_calls_and_usage
     assert result.choices[0].finish_reason == "tool_calls"
     assert result.usage.total_tokens == 15
     request.assert_awaited_once_with(
-        model="deepseek/deepseek-chat",
+        model="deepseek-chat",
         messages=list(messages),
         tools=list(tools),
         stream=False,
-        api_key="test-key",
-        base_url="https://example.invalid",
         timeout=60.0,
     )
 
@@ -110,9 +103,9 @@ async def test_stream_turn_preserves_all_chunks_incrementally(
     monkeypatch: pytest.MonkeyPatch, client: LLMClient, tools: list[dict[str, Any]]
 ) -> None:
     chunks = [
-        ModelResponseStream(choices=[{"delta": {"role": "assistant", "content": ""}}]),
-        ModelResponseStream(choices=[{"delta": {"content": "你好"}}]),
-        ModelResponseStream(
+        make_chunk(choices=[{"delta": {"role": "assistant", "content": ""}}]),
+        make_chunk(choices=[{"delta": {"content": "你好"}}]),
+        make_chunk(
             choices=[
                 {
                     "delta": {
@@ -128,26 +121,26 @@ async def test_stream_turn_preserves_all_chunks_incrementally(
                 }
             ]
         ),
-        ModelResponseStream(
+        make_chunk(
             choices=[
                 {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"README.md"}'}}]}}
             ]
         ),
-        ModelResponseStream(choices=[{"delta": {}, "finish_reason": "tool_calls"}]),
-        ModelResponseStream(
+        make_chunk(choices=[{"delta": {}, "finish_reason": "tool_calls"}]),
+        make_chunk(
             choices=[],
             usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
         ),
     ]
-    consumed: list[ModelResponseStream] = []
+    consumed: list[ChatCompletionChunk] = []
 
-    async def events() -> AsyncIterator[ModelResponseStream]:
+    async def events() -> AsyncIterator[ChatCompletionChunk]:
         for chunk in chunks:
             consumed.append(chunk)
             yield chunk
 
     request = AsyncMock(return_value=events())
-    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    monkeypatch.setattr(client_module.AsyncOpenAI.return_value, "request", request)
     messages = ({"role": "user", "content": "你好"},)
     stream = client.stream_turn(messages, tools=tools)
 
@@ -157,51 +150,38 @@ async def test_stream_turn_preserves_all_chunks_incrementally(
     assert len(remaining) == len(chunks) - 1
     assert all(actual is original for actual, original in zip(remaining, chunks[1:], strict=True))
     request.assert_awaited_once_with(
-        model="deepseek/deepseek-chat",
+        model="deepseek-chat",
         messages=list(messages),
         tools=list(tools),
         stream=True,
-        api_key="test-key",
-        base_url="https://example.invalid",
         timeout=60.0,
     )
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_turn_omits_unset_credentials_and_tools(
+async def test_turn_requires_explicit_service_credentials(
     monkeypatch: pytest.MonkeyPatch, streaming: bool
 ) -> None:
-    response = ModelResponse(choices=[{"message": {"role": "assistant", "content": "完整文本"}}])
-
-    async def events() -> AsyncIterator[ModelResponseStream]:
-        yield ModelResponseStream(choices=[])
-
-    request = AsyncMock(return_value=events() if streaming else response)
-    monkeypatch.setattr(client_module.litellm, "acompletion", request)
-    client = LLMClient(
-        Settings(_env_file=None, DEEPSEEK_API_KEY="", base_url="", model="test-model")
-    )
-
-    if streaming:
-        assert len([chunk async for chunk in client.stream_turn([])]) == 1
-    else:
-        assert await client.complete_turn([]) is response
-        assert response.choices[0].message.content == "完整文本"
-    request.assert_awaited_once_with(
-        model="test-model", messages=[], stream=streaming, timeout=60.0
-    )
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-key")
+    client = LLMClient(Settings(_env_file=None, DEEPSEEK_API_KEY=""))
+    with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):
+        if streaming:
+            await anext(client.stream_turn([]))
+        else:
+            await client.complete_turn([])
+    client_module.AsyncOpenAI.assert_not_called()
 
 
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_turn_preserves_explicit_empty_tools(
     monkeypatch: pytest.MonkeyPatch, client: LLMClient, streaming: bool
 ) -> None:
-    async def events() -> AsyncIterator[ModelResponseStream]:
+    async def events() -> AsyncIterator[ChatCompletionChunk]:
         if False:
-            yield ModelResponseStream(choices=[])
+            yield make_chunk(choices=[])
 
-    request = AsyncMock(return_value=events() if streaming else ModelResponse())
-    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    request = AsyncMock(return_value=events() if streaming else make_completion())
+    monkeypatch.setattr(client_module.AsyncOpenAI.return_value, "request", request)
 
     if streaming:
         assert [chunk async for chunk in client.stream_turn([], tools=[])] == []
@@ -215,14 +195,16 @@ async def test_turn_preserves_explicit_empty_tools(
     "error",
     [
         RuntimeError("请求失败"),
-        Timeout(message="请求超时", model="test-model", llm_provider="deepseek"),
+        APITimeoutError(request=httpx.Request("POST", "https://example.invalid")),
     ],
     ids=["request-error", "request-timeout"],
 )
 async def test_turn_propagates_request_error(
     monkeypatch: pytest.MonkeyPatch, client: LLMClient, streaming: bool, error: Exception
 ) -> None:
-    monkeypatch.setattr(client_module.litellm, "acompletion", AsyncMock(side_effect=error))
+    monkeypatch.setattr(
+        client_module.AsyncOpenAI.return_value, "request", AsyncMock(side_effect=error)
+    )
 
     with pytest.raises(type(error)) as caught:
         if streaming:
@@ -236,20 +218,22 @@ async def test_turn_propagates_request_error(
     "error",
     [
         RuntimeError("连接中断"),
-        Timeout(message="流读取超时", model="test-model", llm_provider="deepseek"),
+        APITimeoutError(request=httpx.Request("POST", "https://example.invalid")),
     ],
     ids=["stream-error", "stream-timeout"],
 )
 async def test_stream_turn_preserves_chunk_before_stream_error(
     monkeypatch: pytest.MonkeyPatch, client: LLMClient, error: Exception
 ) -> None:
-    chunk = ModelResponseStream(choices=[{"delta": {"content": "已收到的文本"}}])
+    chunk = make_chunk(choices=[{"delta": {"content": "已收到的文本"}}])
 
-    async def events() -> AsyncIterator[ModelResponseStream]:
+    async def events() -> AsyncIterator[ChatCompletionChunk]:
         yield chunk
         raise error
 
-    monkeypatch.setattr(client_module.litellm, "acompletion", AsyncMock(return_value=events()))
+    monkeypatch.setattr(
+        client_module.AsyncOpenAI.return_value, "request", AsyncMock(return_value=events())
+    )
     stream = client.stream_turn([])
 
     assert await anext(stream) is chunk
@@ -266,11 +250,11 @@ async def test_turn_forwards_configured_timeout(
         Settings(_env_file=None, DEEPSEEK_API_KEY="test-key", request_timeout_seconds=12.5)
     )
 
-    async def events() -> AsyncIterator[ModelResponseStream]:
-        yield ModelResponseStream(choices=[])
+    async def events() -> AsyncIterator[ChatCompletionChunk]:
+        yield make_chunk(choices=[])
 
-    request = AsyncMock(return_value=events() if streaming else ModelResponse())
-    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    request = AsyncMock(return_value=events() if streaming else make_completion())
+    monkeypatch.setattr(client_module.AsyncOpenAI.return_value, "request", request)
 
     if streaming:
         assert len([chunk async for chunk in client.stream_turn([])]) == 1
@@ -288,13 +272,13 @@ async def test_turn_forwards_extra_request_parameters(
     tools: list[dict[str, Any]],
     streaming: bool,
 ) -> None:
-    response = ModelResponse()
+    response = make_completion()
 
-    async def events() -> AsyncIterator[ModelResponseStream]:
-        yield ModelResponseStream(choices=[])
+    async def events() -> AsyncIterator[ChatCompletionChunk]:
+        yield make_chunk(choices=[])
 
     request = AsyncMock(return_value=events() if streaming else response)
-    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    monkeypatch.setattr(client_module.AsyncOpenAI.return_value, "request", request)
     messages = ({"role": "user", "content": "读取 README"},)
     options = {
         "tools": tools,
@@ -310,11 +294,9 @@ async def test_turn_forwards_extra_request_parameters(
     else:
         assert await client.complete_turn(messages, **options) is response
     request.assert_awaited_once_with(
-        model="deepseek/deepseek-chat",
+        model="deepseek-chat",
         messages=list(messages),
         stream=streaming,
-        api_key="test-key",
-        base_url="https://example.invalid",
         **options,
     )
 
@@ -323,11 +305,11 @@ async def test_turn_forwards_extra_request_parameters(
 async def test_turn_request_overrides_do_not_change_client_defaults(
     monkeypatch: pytest.MonkeyPatch, client: LLMClient, streaming: bool
 ) -> None:
-    async def events() -> AsyncIterator[ModelResponseStream]:
-        yield ModelResponseStream(choices=[])
+    async def events() -> AsyncIterator[ChatCompletionChunk]:
+        yield make_chunk(choices=[])
 
-    request = AsyncMock(side_effect=lambda **kwargs: events() if streaming else ModelResponse())
-    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    request = AsyncMock(side_effect=lambda **kwargs: events() if streaming else make_completion())
+    monkeypatch.setattr(client_module.AsyncOpenAI.return_value, "request", request)
     overrides = {
         "model": "other-model",
         "api_key": "other-test-key",
@@ -344,14 +326,22 @@ async def test_turn_request_overrides_do_not_change_client_defaults(
     assert request.await_args_list[0].kwargs == {
         "messages": [],
         "stream": streaming,
-        **overrides,
+        "model": "other-model",
+        "timeout": 2.5,
     }
-    assert request.await_args_list[1].kwargs == {
-        "model": "deepseek/deepseek-chat",
-        "messages": [],
-        "stream": streaming,
+    sdk = client_module.AsyncOpenAI.return_value
+    assert sdk.with_options.call_args_list[0].kwargs == {
+        "api_key": "other-test-key",
+        "base_url": "https://other.example.invalid",
+    }
+    assert sdk.with_options.call_args_list[1].kwargs == {
         "api_key": "test-key",
         "base_url": "https://example.invalid",
+    }
+    assert request.await_args_list[1].kwargs == {
+        "model": "deepseek-chat",
+        "messages": [],
+        "stream": streaming,
         "timeout": 60.0,
     }
 
@@ -361,7 +351,7 @@ async def test_turn_rejects_stream_option_before_request(
     monkeypatch: pytest.MonkeyPatch, client: LLMClient, streaming: bool
 ) -> None:
     request = AsyncMock()
-    monkeypatch.setattr(client_module.litellm, "acompletion", request)
+    monkeypatch.setattr(client_module.AsyncOpenAI.return_value, "request", request)
 
     with pytest.raises(ValueError, match="stream"):
         if streaming:

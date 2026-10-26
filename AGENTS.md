@@ -7,7 +7,7 @@
 安排学习步骤或调整能力边界、里程碑前，先阅读 [PLAN.md](PLAN.md) 的当前进度、契约、验收标准与协作分工；记忆系统、知识检索、多 Agent 协作与通信属于核心学习主线。追溯已完成阶段的验收证据或历史调整时，阅读 [计划历史](docs/plan-history.md)。
 
 - `src/code_agent/`：应用源码；`config.py` 加载配置，`events.py` 定义共享消息与事件模型。
-- `llm/`：封装 LiteLLM；`ui/`：纯命令行交互，`cli.py` 为入口，`repl.py`、`render.py`、`prompts.py` 为后续会话、输出与确认模块。
+- `llm/`：封装 OpenAI SDK，连接 DeepSeek 等 OpenAI 兼容服务；`ui/`：纯命令行交互，`cli.py` 为入口，`repl.py`、`render.py`、`prompts.py` 为后续会话、输出与确认模块。
 - `core/`、`modes/`、`tools/builtin/`、`context/`、`memory/`、`safety/`、`tracing/`：各能力域的模块骨架。
 - `tests/code_agent/`：按源码模块层级组织的单元测试，包括配置、模型层与命令行测试。
 - `pyproject.toml`：依赖与工具配置；`uv.lock`：依赖版本锁定。

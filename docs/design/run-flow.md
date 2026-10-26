@@ -46,6 +46,8 @@ CLI / REPL：采集输入
 
 `_request_turn` 只在取得下一片和组装的位置捕获已知 SDK／协议异常；显示回调在捕获范围外。即使显示器抛出与 SDK 相同的异常类型，也仍作为显示故障传播。模型流使用 `aclosing`，显示失败或取消时也会关闭流。
 
+2026-10-26 模型接入迁移为 OpenAI SDK：`LLMClient` 使用 SDK 流上下文释放 HTTP 响应，将读取 SSE 时直接抛出的 HTTPX 超时／连接异常转换为 `APITimeoutError`／`APIConnectionError`，核心在模型边界捕获 `APIError`。会话内复用 HTTP 连接池；CLI 在退出单次任务或整个会话的 `finally` 中调用核心公开入口 `Agent.close()`。运行中的取消沿用既有历史结算，不提前关闭整个会话客户端。
+
 ## 工具与进程的职责
 
 Registry 只转换未知工具和入参校验错误。handler 必须自行返回预期失败；Bash 的启动错误、`read_file` 的文件操作错误都在各自工具边界处理。handler 的编程错误和取消不再被包装成普通观察。

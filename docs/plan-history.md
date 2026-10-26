@@ -2,6 +2,15 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-26 启动性能排查与 OpenAI SDK 迁移
+
+- 用户报告启动约五六秒延迟。本机直接执行 `.venv/Scripts/codeagent.exe --version` 两次分别为 9.025 秒、7.953 秒；空 Python 进程约 0.08 秒。导入计时定位到 CLI → core.agent → LiteLLM，单次 LiteLLM 累计导入约 6.398 秒；其价格表远程请求在当前环境连接失败后回退本地。强制使用本地价格表后仍约 5.3–5.5 秒。
+- 用户明确授权 Codex 直接迁移为 OpenAI SDK。保留 `LLMClient.complete_turn/stream_turn`、原始流分片、组装器算法与核心历史结算；默认仍使用 DeepSeek 服务及 `DEEPSEEK_API_KEY`，模型配置改为 `deepseek-chat`，请求时兼容旧 `deepseek/` 前缀，未修改本地 `.env`。连接池在首次请求创建，跨轮复用；请求级地址、密钥、模型与超时覆盖不改变默认值。显式设置 `max_retries=0`。
+- 新增内存 HTTP 传输测试，验证真实 SDK 的请求序列化、覆盖隔离、无自动重试，以及正常结束、提前关闭、取消、超时和断连时关闭响应。实测 SDK 在 SSE 读取时直接抛出 HTTPX 异常，模型层将其转换为 `APITimeoutError`／`APIConnectionError`，核心继续在模型边界返回 `RunResult(failed)`。CLI 在退出单次任务或整个会话时调用 `Agent.close()`；单次交互运行取消仍可继续会话。
+- 全量验证：`uv run --offline --locked pytest -q -p no:cacheprovider --basetemp=artifacts/openai-sdk-migration/pytest-final-01 --tb=short`，**366 项通过**。测试因 Windows 沙箱临时目录访问限制在沙箱外运行，模型请求被模拟；没有调用真实模型服务。`ruff check . --no-cache`、`ruff format src tests --check --no-cache`、`git diff --check`、离线构建 sdist/wheel 和 `uv pip check` 通过。全仓格式检查仍有既有 3 份研究笔记的代码块格式差异，未修改无关内容。
+- 锁文件从原有依赖集合移除 LiteLLM 及其额外依赖，虚拟环境已离线同步，OpenAI SDK 为 2.54.0。最终直接执行 `--version` 三次为 1.414、1.309、1.266 秒；`uv run --offline --locked codeagent --version` 为 1.298、1.341、1.318 秒。此为版本查询的进程耗时，不包含首次 HTTP 客户端初始化或模型响应。原始计时与构建产物放在已忽略的 `artifacts/openai-sdk-migration/`。
+- 本次为用户授权的维护例外，不改变后续默认协作分工，不推进或确认 M4b/M4c 里程碑验收；提交仅包含 SDK 迁移相关修改，原有未跟踪文件 `a.txt` 保持原样。
+
 ## 2026-10-23 权限基础流程接线与自动化回归
 
 - 用户手写 Gate、Agent 和 Registry 接线：按会话保存策略与授权缓存；校验后的工具参数经过异步执行前接点，拒绝时 handler 不执行，ToolResult 按调用 ID 写入历史并呈现。Bash 删除旧的内部审批，保留简单规则和策略；命令解析及精细 scope_key 后续完善。

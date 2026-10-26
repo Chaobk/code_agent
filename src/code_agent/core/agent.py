@@ -5,7 +5,7 @@ from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 
-from litellm.exceptions import LITELLM_EXCEPTION_TYPES
+from openai import APIError
 
 from code_agent.approval.gate import ApprovalGate
 from code_agent.approval.policy import ApprovalPolicy
@@ -30,7 +30,7 @@ from code_agent.tools.builtin import create_builtin_registry
 from code_agent.tools.builtin.shell import BashApprovalPolicy
 from code_agent.tools.registry import ToolRegistry
 
-MODEL_ERRORS = (*LITELLM_EXCEPTION_TYPES, ModelProtocolError)
+MODEL_ERRORS = (APIError, ModelProtocolError)
 
 SYSTEM_PROMPT = """
     你是一个编码助手，要尽力完成用户的任务
@@ -82,6 +82,10 @@ class Agent:
 
         self.approval_gate = approval_gate
         self.approval_policies = dict(approval_policies)
+
+    async def close(self) -> None:
+        """会话或单次任务退出时释放模型客户端。"""
+        await self.client.close()
 
     async def _before_tool_execute(
         self,
