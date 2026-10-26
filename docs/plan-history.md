@@ -2,6 +2,13 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-26 审批空输入与 Ctrl+C 拒绝
+
+- 用户选择审批时 Ctrl+C 与 EOF 都拒绝当前操作，拒绝观察回灌后模型可继续；其他运行阶段仍取消当前运行。用户实现空白输入直接返回 r，以及审批 input 期间临时安装 signal.default_int_handler、在 finally 恢复原 SIGINT 处理器。避免审批读取触发 REPL 的 Task.cancel；不改 REPL 或核心执行链。
+- Codex 补上 `[r/Enter] 拒绝` 提示、说明与回归测试，覆盖空白只读一次、合法选择归一化、非法输入重试及上限、EOF/KeyboardInterrupt、非交互入口、正常和异常退出时恢复原处理器。CLI 集成测试调用当前注册的处理器，验证审批拒绝、工具执行零次、拒绝结果回灌后模型继续、恢复普通输入及会话退出时恢复原处理器；假模型在请求前让出事件循环，防止遗漏待处理任务取消。
+- 重点回归 49 项通过。完整命令：`.venv/Scripts/python.exe -B -m pytest -q --tb=short -p no:cacheprovider --basetemp=artifacts/approval-sigint-20261026-full-01`，**382 项通过**。因既有 Windows 沙箱临时目录访问问题在沙箱外运行，未访问真实模型服务。`ruff check . --no-cache`、`ruff format --check src tests --no-cache`、`git diff --check` 通过。
+- 自动化直接调用信号处理器，不代表真实终端按键实验；真实 Ctrl+C/EOF 与工具执行中取消仍待手动复核，不宣称完整 M4c 已验收，也不将原 LiteLLM 协程警告归因于本次修复。参考项目的输入语义与本项目选择见[研究笔记](research/approval-empty-input-20261026.md)。原有未跟踪文件 a.txt 不纳入提交。
+
 ## 2026-10-26 启动性能排查与 OpenAI SDK 迁移
 
 - 用户报告启动约五六秒延迟。本机直接执行 `.venv/Scripts/codeagent.exe --version` 两次分别为 9.025 秒、7.953 秒；空 Python 进程约 0.08 秒。导入计时定位到 CLI → core.agent → LiteLLM，单次 LiteLLM 累计导入约 6.398 秒；其价格表远程请求在当前环境连接失败后回退本地。强制使用本地价格表后仍约 5.3–5.5 秒。
