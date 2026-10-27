@@ -76,9 +76,10 @@ src/code_agent/
 ├── modes/          # E 模式:react / plan
 ├── tools/          # D 工具系统
 ├── context/        # B 上下文管理
+├── sessions/       # 会话身份与存储：已实现创建，消息追加及加载待接入
 ├── memory/         # C 记忆管理
 ├── safety/         # G 安全与权限
-├── tracing/        # I 轨迹与评测
+├── tracing/        # I 运行诊断与评测记录
 └── ui/             # H 命令行交互层
     ├── cli.py      # 当前入口:--version、-p、终端多轮会话
     ├── repl.py     # 多轮输入、退出、中断与继续
