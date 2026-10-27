@@ -2,6 +2,16 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-27 M4c 基础交互真实终端复核
+
+- 用户确认接受基础交互小步结果，并开始 M5a；这不代表完整 M4c 或其他待验收阶段已获确认。
+- 使用 OpenAI ChatCompletionChunk 脚本模型，不访问远程模型；真实 CLI 交互入口、审批输入、Agent/Registry 与本机 Git Bash 保持原实现。单个 Agent 完成 approve、reject、enter、space、eof、sigint、cancel、after 八次运行，stdin.isatty() 为 true。
+- 批准 o 后 Bash 执行一次；r、Enter、纯空白、实际 Ctrl+Z/Enter（Windows EOF）及审批时 Ctrl+C 均生成 permission_denied/not_started 观察，handler 未执行，模型接收观察后正常完成。八个调用各有一个对应结果。
+- cancel 案例批准后，确认 Bash 已写出启动标记，再从 TTY 发送 Ctrl+C；当前运行传播 CancelledError，观察结算为 unknown，所有运行结束时 pending 为空。命令尾部文件未生成；三个 Bash 进程均有退出码，stdout/stderr 均 EOF。随后在普通输入时 Ctrl+C 仍只丢弃当前行，after 任务再次批准并执行成功。
+- `/exit` 后应用捕获退出码 0、原 SIGINT 处理器恢复、客户端关闭。PTY PowerShell 宿主返回 1，与应用退出码分别记录；无输出收尾超时或 transport 诊断。独立验证脚本共 23 项检查通过。
+- 首次沙箱内尝试启动 Bash 返回 WinError 5，单独保留该次失败；自动审批允许后在沙箱外完成上述实验。全部副作用局限于独立 artifacts 工作目录。原始脚本为 `artifacts/m4c-terminal-20261027/terminal_smoke.py`，成功记录在 `verified/console.txt`、`verified/report.json`、`verified/verification.json`，独立核查脚本为同级 `verify.py`。
+- 复核时未修改应用源码或正式测试，未重新执行完整 pytest；382 项通过仍属于 2026-10-26 的历史回归结果。复核完成后用户确认基础交互小步并进入 M5a；完整 M4c 未验收，原有 a.txt 保留。
+
 ## 2026-10-26 学习顺序调整：权限基础收尾后推进记忆与上下文
 
 - 用户确认优先贯通 Agent 的其他主线，授权调整计划。当前先完成 M4c 基础交互的真实终端复核：审批批准、r/空白/EOF/Ctrl+C 拒绝、执行中取消及会话续用；展示证据并获得用户确认后进入 M5a。完整 M4c 保持未验收，M3/M4a/M4b 的既有验收状态不因本次调整改变。
