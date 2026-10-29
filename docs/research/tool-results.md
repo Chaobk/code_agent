@@ -20,7 +20,7 @@
 
 普通 function calling 的结果通常是字符串，其内容可自行选择文本或 JSON；Chat Completions 通过 `role=tool`、`tool_call_id` 与请求对应。来源：[官方 function calling 文档](https://developers.openai.com/api/docs/guides/function-calling)。不能把 Codex 内部成功字段当成所有模型供应商支持的通用协议字段。
 
-专用 Responses shell 协议另有 `shell_call_output`，里面包含 stdout、stderr 与退出或超时 outcome，官方要求保留非零退出输出供模型恢复。来源：[官方 shell 文档](https://developers.openai.com/api/docs/guides/tools-shell)。这是特定协议，不意味着当前 LiteLLM/DeepSeek Chat Completions 项目应切换 API。
+专用 Responses shell 协议另有 `shell_call_output`，里面包含 stdout、stderr 与退出或超时 outcome，官方要求保留非零退出输出供模型恢复。来源：[官方 shell 文档](https://developers.openai.com/api/docs/guides/tools-shell)。这是特定协议，不意味着本项目的 OpenAI SDK / DeepSeek Chat Completions 接入应切换 API。
 
 ## OpenCode：执行结果、执行状态、模型消息分层
 
@@ -78,7 +78,7 @@ class ToolResult(BaseModel):
     truncated: bool = False
 ```
 
-主开发分支当前采用 [events.py](../../src/code_agent/events.py) 中的 output: JsonValue，允许工具保留结构化 JSON。ToolResultEvent、read_file 和 Agent 仍是旧字符串路径，后续接入时统一迁移；tool_call_id 保留在调用事件外围。Bash 的启动、超时/取消分支及 psutil 清理已有代码，返回封装和完整行为验证尚未完成。
+当前 [events.py](../../src/code_agent/events.py) 保留该三字段结构；Registry、Agent 与默认 Bash 路径已接通统一结果。调用关联位于消息与事件外围，工具的领域数据保存在 output。当前行为及验收状态以 [PLAN.md](../../PLAN.md) 为准。
 
 | 字段 | 约定 |
 | --- | --- |
@@ -88,7 +88,7 @@ class ToolResult(BaseModel):
 
 Bash 的 output 采用结构化 JSON，包含 stdout、stderr 和原始 exit_code。正常进程退出(含非零)为 COMPLETED；超时为 TIMED_OUT，保留部分输出与原因，exit_code 为 null。无法启动等执行错误为 ERROR，原因放在 output 中。截断标记放在 ToolResult.truncated，工具调用状态放在 ToolResult.status，无需在 output 中重复保存相同标记。
 
-后续 Agent 接入时需要将统一结果转换成文本；以下为计划中的回灌形式，当前尚未接入：
+Agent 已按以下形式将结果序列化到配对的工具消息：
 
 ```python
 {"role": "tool", "tool_call_id": call.id, "content": result.model_dump_json()}
@@ -96,6 +96,6 @@ Bash 的 output 采用结构化 JSON，包含 stdout、stderr 和原始 exit_cod
 
 这次选择省去 metadata，程序以后确实需要直接读取工具专属字段时再讨论结构化数据接口。通用 core 不应按工具名到处解析 output。回灌文本应包含 output、status 和 truncated，让模型同时得到状态与完整性信息；不能直接把 ToolResult 或字典放进当前 Chat Completions 的 content。
 
-Bash 执行器仍需落实读取阶段的缓存上限，stdout/stderr 合计最多 20,000 字符，两个管道持续排空；不要截断序列化后的整段 JSON。psutil 清理函数已实现，但属于快照清理，其实际范围见 [进程清理研究](process-cleanup.md)。取消应清理后继续传播，不转换为普通 ToolResult。
+Bash 在读取阶段实施 stdout/stderr 合计 20,000 字符的保留预算，超额后仍排空管道；不会通过截断序列化后的 JSON 实施预算。取消完成清理后传播；核心另行结清 pending 调用。Windows Git Bash 还使用定向控制台信号，实际范围见[取消修复](../design/m4b-git-bash-cancellation.md)。
 
-2026-10-09 交接状态：[test_shell.py](../../tests/code_agent/tools/builtin/test_shell.py) 的八个清理测试通过，包括真实父子 Python 进程；两个正常执行测试因 run_bash 缺少 ToolResult 返回而失败。下一步补返回封装、读取预算、错误回灌和完整超时/取消测试，再接入 Agent 与 CLI。M1 的目标仍是默认只向模型暴露 bash，当前注册表尚未切换。
+2026-10-09 交接状态：[test_shell.py](../../tests/code_agent/tools/builtin/test_shell.py) 的八个清理测试通过，包括真实父子 Python 进程；两个正常执行测试因 run_bash 缺少 ToolResult 返回而失败。这是当时的未完成状态；后续已接通默认 Bash、结果回灌和预算控制，不能将该失败数量当作当前测试结果。

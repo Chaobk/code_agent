@@ -9,25 +9,25 @@
 
 - [completion-signal-codex.md](completion-signal-codex.md) —— OpenAI Codex（Rust 源码，含行号）
 - [completion-signal-opencode.md](completion-signal-opencode.md) —— OpenCode（TypeScript 源码）
-- [completion-signal-firstparty.md](completion-signal-firstparty.md) —— Pi、Roo Code（官方文档）
+- [completion-signal-firstparty.md](completion-signal-firstparty.md) —— Pi 官方文档、Roo Code 待核验资料
 - [completion-signal-others.md](completion-signal-others.md) —— Pi 源码补充、Cline 两条线路、Aider、SWE-agent、Claude Code
 
-> **本次调研的一个方法论收获**：`github.com` / `raw.githubusercontent.com` / `api.github.com` 在本机被 hosts 屏蔽到 127.0.0.1，但通过 `https://gh-proxy.com/<原始URL>`、`https://ghproxy.net/<原始URL>`、`https://fastly.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>` 可以读到**真实源码**，并用代码搜索辅助核查工具名称；未命中只能作为有限的否定证据。本次结论绝大多数是源码级，而非文档转述。
+> **本次调研的一个方法论收获**：`github.com` / `raw.githubusercontent.com` / `api.github.com` 在本机被 hosts 屏蔽到 127.0.0.1，但原调研通过第三方代理或 CDN 取得仓库文件副本，再以代码搜索辅助定位；代理响应不能单独证明与官方固定提交一致；未命中只能作为有限的否定证据。本次结论绝大多数是源码级，而非文档转述。
 
 ## 一、结论对照表
 
 | 项目 | 结束机制 | 显式完成工具/命令 | 运行/提交状态（不等于验收成功） | 强制独占一轮 |
 |---|---|---|---|---|
-| **OpenAI Codex** | `needs_follow_up = model_needs_follow_up \|\| has_pending_input`；为假则 `break`（`session/turn.rs` L578 → L661 → L762） | **无**（`finish_task` 全仓库 0 命中） | 区分：两个并列事件 `TurnComplete`（可带 `error`）与 `TurnAborted(reason)` | 不存在该问题（没有完成调用） |
-| **OpenCode** | 本轮没有需要本地执行的 tool call（布尔 `needsContinuation`） | **无**（`finish_task`/`task_complete` 0 命中） | `Outcome` 枚举 + 中断原因枚举 `["user","shutdown","superseded","inactivity"]` | 不存在；同轮可并发多工具 |
-| **Pi** | 无工具结果且无排队消息 → run 结束；另有工具级 `terminate` 提前结束 | **无**（但有 `terminate` 标志，见下） | **否**；失败是硬退出 `stopReason: "error"/"aborted"` | 否；单条消息可多工具，默认并行 |
+| **OpenAI Codex** | `needs_follow_up = model_needs_follow_up \|\| has_pending_input`；为假则 `break`（`session/turn.rs` L578 → L661 → L762） | 已读注册路径未见；搜索未命中不构成全仓证明 | 区分：两个并列事件 `TurnComplete`（可带 `error`）与 `TurnAborted(reason)` | 不存在该问题（没有完成调用） |
+| **OpenCode** | 本轮没有需要本地执行的 tool call（布尔 `needsContinuation`） | 已读循环不依赖完成工具；注册清单未完全核实 | `Outcome` 枚举 + 中断原因枚举 `["user","shutdown","superseded","inactivity"]` | 不存在；同轮可并发多工具 |
+| **Pi** | 工具结果、队列或 finishTurn 可驱动继续；会话层另有收敛接点 | 默认工具集未见完成工具；扩展可新增 | 模型停止原因与运行事件；不能据此判断目标成功 | 无通用独占要求；所读快照默认并行 |
 | **Cline（VS Code 线路）** | **不是**"无工具即结束"：无工具调用会被判错并注入 `noToolsUsed()` | **有**：`attempt_completion(result, command?)` | 部分；"放弃/阻塞"没有对应工具 | **是，运行时代码强制**（`didAlreadyUseTool`） |
 | **Cline（SDK/ClineCore 线路）** | 专门完成工具 | **有**：`submit_and_exit({summary, verified})` | 弱（`verified` 布尔） | 未能确认 |
 | **Aider** | 无专门完成工具；编辑/验证后无 reflected_message 时结束当前任务，`/exit`、`/quit` 退出程序 | **无** | 否 | 不适用 |
-| **SWE-agent** | 完成命令 `submit` + 环境哨兵 `<<SWE_AGENT_SUBMISSION>>`；`exit` 表示放弃 | **有**：`submit`（无参数） | **是，粒度最细**：`exit_status` 一大族 | 已读解析器每轮一个 action；submit 与其它 shell 操作混用限制未核实 |
+| **SWE-agent** | 完成命令 `submit` + 环境哨兵 `<<SWE_AGENT_SUBMISSION>>`；`exit` 表示放弃 | **有**：`submit`（无参数） | `exit_status` 记录提交与退出原因，非任务成功证明 | 已读解析器每轮一个 action；submit 与其它 shell 操作混用限制未核实 |
 | **Claude Code / Agent SDK** | 模型不再发起工具调用 | 无（`EndConversation` 是会话级终止，不是任务级） | 是（`ResultMessage.subtype`） | 否 |
 
-**本次样本的共同模式之一**是"没有需要继续处理的工具调用或输入时结束"；样本不足以推断全行业占比（Codex、OpenCode、Pi、Claude Code），结束语义由**协议事件/字段**承载；显式完成工具出现在**交互形态需要它**的地方——Cline 的 IDE 结对模式（每轮一个工具、完成后要出卡片和反馈）、SWE-agent 的基准评测（需要可机器判定的 `exit_status`）。
+**本次样本的共同模式之一**是"没有需要继续处理的工具调用或输入时结束"；Pi 还可能由 finishTurn 或会话接点要求续跑，不能只看是否有工具。样本不足以推断全行业占比（Codex、OpenCode、Pi、Claude Code），结束语义由**协议事件/字段**承载；显式完成工具出现在**交互形态需要它**的地方——Cline 的 IDE 结对模式（每轮一个工具、完成后要出卡片和反馈）、SWE-agent 的基准评测（需要可机器判定的 `exit_status`）。
 
 ## 二、六个关键发现（每条都有对应文件里的链接证据）
 
@@ -55,7 +55,7 @@
 - 判定完全相反：**模型不调用工具 ≠ 结束**，会注入 `formatResponse.noToolsUsed()` 并 `consecutiveMistakeCount++`。
 - 强制独占：`didAlreadyUseTool` 标志拦截同一消息里的第二个工具，回 `formatResponse.toolAlreadyUsed()`；一旦已有工具结果，之后的文本块也被丢弃。`main` 的措辞是 "Only one tool may be used per message"。
 - 代价很直接：一条消息里后面所有内容都被丢掉。**照抄它就等于推翻本项目"单轮可多工具"的前提。**
-- 另一坑：Cline 现在有**两条线路**——VS Code 扩展仍是 XML 的 `attempt_completion`，新的 SDK/ClineCore 已换成原生工具 `submit_and_exit({summary, verified})`；官方 legacy 名单故意没列 `attempt_completion`，容易误判为已删除。
+- 另一坑：原调研分别读取了 Cline 的**两条线路**——VS Code 扩展仍是 XML 的 `attempt_completion`，新的 SDK/ClineCore 已换成原生工具 `submit_and_exit({summary, verified})`；官方 legacy 名单故意没列 `attempt_completion`，容易误判为已删除。
 
 ### 5. SWE-agent：`exit_status` 区分提交与停止原因
 
@@ -68,22 +68,17 @@
 - Aider 无专门的模型侧完成工具；当前任务在编辑及验证后没有待修正的 reflected_message 时结束。`/exit`、`/quit` 是退出应用命令，不能当作任务循环的结束机制。
 - Claude Code / Agent SDK 是"模型不再发起工具调用"这一派，收尾状态在 `ResultMessage.subtype` 上。
 
-## 三、对 code_agent 的设计建议（研究推论，不是上述项目的事实）
+## 三、对 code_agent 的现行结论与后续实验
 
-用户在本轮复核后已确认采用正常 stop 且无工具调用的结束方式，finish_task 留作按需增强。以下为原调研提出的备选权衡；结构化结果、额外总结请求和整批终止不自动成为 M2a 必做项，以最新 PLAN.md 为准。
+2026-10-28 按当前契约修订。本项目已采用正常 `finish_reason=stop` 且本轮无工具调用时返回 `RunResult(completed)`；有调用则先执行并回灌，`END_TASK` 只是普通文本。请求轮数耗尽返回 max_steps，已知模型失败返回 failed，取消与内部故障继续传播。[运行流程](../design/run-flow.md)
 
-1. **`PLAN.md`"M2a 改为结构化 finish_task"要改写理由。** 不能表述为业界标准——准确表述是"我们希望结束意图可校验、可携带结构化结论"，这是一个**可选权衡**。可选的反面证据很充分：Codex、OpenCode、Pi、Claude Code 都没有这个工具。
-2. **先把两件事拆开，再决定要不要工具**：
-   - **循环终止**：可以选择 finish_reason=stop 且无工具调用即正常结束；M1 已提交实现要求 END_TASK 末行，没有标记的纯文本会继续请求。主目录当前未提交实现正在试验移除标记。删掉文本标记即可，**不需要新工具**；
-   - **收尾申报**：只有当 `-p`/CLI（以及 M5 的轨迹与恢复）确实需要程序化判定"完成 vs 阻塞"时，才值得引入一个显式申报动作。
-3. **若引入 `finish_task`，采用 Codex 的正交设计**：结束 = 一个事件；成功与否 = 事件上可选的 `error`/状态字段。**不要**把 blocked 表达成"没结束"。同时参考 SWE-agent 把状态编成一小族可读值（`completed` / `blocked` / `max_steps` / `interrupted`），而不是一个布尔。
-4. **区分两种独占规则。** Cline 的全局每消息一个工具，与本项目原计划仅要求 finish_task 独占一轮不同：后者仍允许普通工具批量调用。Pi 的整批同意也需要每个结果明确终止，不能直接解决 finish_task 与普通调用混用。哪种规则适合本项目须单独决定；不限制单轮数量也不等于并行执行。
-5. **`max_steps` 的收尾方式可以单独比较，不自动成为当前阶段前置条件。** 现在是 `raise RuntimeError`，OpenCode 是"最后一轮禁工具 + 注入收尾提示"，Codex 循环里甚至没有步数条件。改成前者能得到可解释的收尾，且是行为级别的可测改进。
-6. **事件层（M2b）可借鉴的现成形状**：`ToolResultEvent` 携带 `tool_call_id` + 工具名 + `ToolResult` + `duration_ms`（对齐 Pi 的 `tool_execution_end`）；run 级事件区分**正常结束 / 失败结束 / 被中断**，而不是用一个字符串概括。
-7. **最小可行路径（推荐）**：
-   - 第一步：删除 `END_TASK`，正常结束 = `finish_reason=stop` 且本轮无工具调用；`run()` 返回最后一条助手消息文本；
-   - 第二步：让 `Agent.run()` 返回结构化结果（状态 + summary），CLI 据此定退出码；`max_steps` 改为"禁工具 + 注入收尾提示"；
-   - 第三步（可选，需真实失败案例支撑）：若模型频繁"该停不停/不该停却停"，再引入 `finish_task`，并单独定义混用和错误回灌语义；Pi 的整批终止仅作为对照。
+结束机制、收尾申报和外部成功判定分别设计。`RunResult` 表示运行结果，不能证明测试或用户目标达标；工具结果的 completed 也不表示命令退出码为零。当前三类事件仅承载正文、调用和结果进度，没有 `RunFinished`。
+
+`finish_task` 保留为案例驱动的候选增强。结构化申报可检查字段，却不能证明申报真实；若采用，还需定义与普通调用混用、拒绝及错误回灌的语义。参考项目是否有类似工具不能代替本项目需求。
+
+“上限时额外请求一次禁工具总结”属于另一种策略，会增加一次模型请求并可能再次失败；本项目没有采纳，不能写成下一步必做。源码中某个循环未见步数条件，也不能推出整个系统没有预算。
+
+上游事件可用于理解层次，本项目直接通过返回值与异常处理一次运行的结束。无需为对齐参考项目再增加终态事件或通用状态机。
 
 ## 四、可信度说明
 

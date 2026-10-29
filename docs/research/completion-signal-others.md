@@ -265,7 +265,7 @@ Cline 目前有**两条并行线路**，必须分开说：VS Code 扩展（旧 X
 2. **没有任务完成工具。** 内置工具表（`Agent`、`Bash`、`Read`、`Edit`、`Write`、`Glob`、`Grep`、`WebFetch`、`WebSearch`、`Task*`、`Skill` 等）里没有 finish/complete 类工具。`EndConversation` 是**会话级终止**（"Ends the session, in rare cases of sustained abusive input or when you ask Claude to demonstrate the tool"），不是任务完成信号；官方还特别说明它不触发 `PreToolUse`、也不能被 deny 规则或 `--disallowedTools` 移除。**证据类型：实际抓取官方文档。**
 3. **区分成功与各类非正常终止**：`ResultMessage.subtype` 取 `success` / `error_max_turns` / `error_max_budget_usd` / `error_during_execution` / `error_max_structured_output_retries`；只有 `success` 才带 `result` 文本。另有 `stop_reason`（`end_turn` / `max_tokens` / `refusal` 等）表示模型最后一轮的停止原因。**证据类型：实际抓取官方文档。**
 4. **无独占一轮约束**：文档明确 One turn 可以请求多个 tool call，且"read-only tools can run concurrently"、"Tools that modify state run sequentially"。**证据类型：实际抓取官方文档。**
-5. **其它终止路径**：`max_turns`（只计 tool-use 轮次）、`max_budget_usd`；`Stop` hook（"When Claude finishes responding"）、`StopFailure`（"When the turn ends due to an API error"）。`Stop` hook 可返回 `decision: "block"` + `reason` 阻止收尾，或返回 `additionalContext` 让对话继续——**这是"用钩子延长而不是用工具完成"的另一种思路**。用户中断/崩溃则产生 `error_during_execution`。
+5. **其它终止路径**：`max_turns`（只计 tool-use 轮次）、`max_budget_usd`；`Stop` hook（"When Claude finishes responding"）、`StopFailure`（"When the turn ends due to an API error"）。`Stop` hook 可返回 `decision: "block"` + `reason` 阻止收尾，或返回 `additionalContext` 让对话继续——**这是"用钩子延长而不是用工具完成"的另一种思路**。可处理的执行错误可通过结果 subtype 表达；进程崩溃可能没有机会生成或交付 ResultMessage，不能把两者合并成相同保证。
 
 **证据（带链接）**
 
@@ -274,16 +274,17 @@ Cline 目前有**两条并行线路**，必须分开说：VS Code 扩展（旧 X
 - [Hooks reference](https://code.claude.com/docs/en/hooks.md)（实际抓取，含 `Stop` / `StopFailure` 与决策控制表）
 - [Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview)（实际抓取）
 
-## 对 code_agent 的推论
+## 对 code_agent 的推论与采用情况
 
-以下都是基于上面证据的设计归纳，不是任何一家共享的标准。当前 `code_agent` 处于 M2a：默认只提供 `bash`，**不限制单轮工具调用数量**，本轮用户已确认采用正常 stop 且无工具调用结束，`finish_task` 按需增强；以下涉及显式申报的内容只是条件性建议。
+本项目已完成流式闭环，采用正常 stop 且无工具调用时结束，RunResult 表达 completed、failed 或 max_steps；取消与内部故障向外传播。当前默认 Bash、顺序执行，不限制单轮调用数量。原稿把项目写成仍在 M2a 的说明已过时。[现行计划](../../PLAN.md)
 
-1. **"没有工具调用即结束"是多数派的默认，但它不适合所有人机交互形态。** Pi 与 Claude Code 都走这条路；它成立的前提是"模型没话说就真的收工了"。Cline 明确否定这一点（无工具调用被当成错误并注入 `noToolsUsed()`），因为 IDE 场景下"沉默"有歧义。本项目的用户是终端里的开发者，介于两者之间——若要让"我干完了"可被程序化判定（M5 的轨迹与恢复、M6 的模式接口都需要），**一个显式完成信号比隐式约定更省事**。
-2. **如果引入显式完成工具，必须同时决定"独占"规则，并且要用代码而不是提示词实现。** Cline 是唯一把这条写成运行时不变量（`didAlreadyUseTool`）的案例，而它的代价很直接：一条消息里后面的工具调用和文本都会被丢弃，只能回一句 `toolAlreadyUsed`。本项目当前允许单轮多工具调用，若照抄 Cline 就等于推翻这个前提。
-3. **另一种更贴合本项目现状的独占解法是 Pi 的"整批同意"**：`terminate` 只在**这一批全部**工具结果都声明终止时才生效（`shouldTerminateToolBatch`：`finalizedCalls.every((f) => f.result.terminate === true)`）。这允许一批包含多个调用，但不保证一个完成调用与普通探查混用就会终止：普通结果未置 terminate=true 时，整批判定仍为 false。只能将其作为批次终止的设计对照。
-4. **成功与阻塞应当分开编码，并且要能被状态机与轨迹读到。** SWE-agent 的 `exit_status` 是本次样本中较细的运行/提交状态设计：`submitted` 表示产物已提交，不证明测试或任务验收成功，`exit_command` 是模型主动放弃，`exit_cost`/`exit_timeout`/`exit_context` 是系统侧截断，另有一个"出错也尽力提交"的 `submitted (<prev>)` 复合态。对照之下，Pi 只有 `stopReason: "error" | "aborted"` 这种硬退出血统，Aider 干脆没有。本项目若只做 `finish_task`，建议至少约定三态：`completed` / `blocked`（模型自述做不到）/ `aborted`（中断或预算耗尽），并写进 `events.py` 的事件模型。
-5. **Aider 的"编辑格式即协议"值得单独记一笔**：它证明**不做工具调用也能做成编程 Agent**——模型的输出格式（SEARCH/REPLACE、udiff）本身就是接口，解析失败用"反射消息"重试，上限 3 次。本项目已经选择了工具路线，这条不照搬；但它对"重试预算"的设定（`max_reflections = 3`、Aider 用 `reflected_message` 单通道回灌）可作为有独立预算的协议纠错设计对照，不自动增加本项目的重试前置条件。
-6. **`finish_task` 的参数不要照抄 Cline 的 `result`/`command` 两段式。** `command` 是 IDE 演示按钮的产物（Roo 文档明说它需要用户批准后才执行、以 `completion_result` UI 呈现）；本项目是纯命令行、且工具返回格式研究已经确定"统一轻壳 + 各工具自己的 metadata"（见 `tool-results.md`）。更贴近本项目的是 SWE-agent 的极简签名（无参数，结果是既有工作产出）或 SDK 版 Cline 的 `summary` + 一个自证布尔。
+这些样本展示了隐式循环终止、显式提交命令和 UI 完成反馈等不同设计，无法据此统计行业“多数派”。任务恢复、轨迹或决策模式也不必依赖 finish_task；本项目继续将它保留为可选增强。
+
+若未来需要结构化申报，应分别设计申报字段、实际结束判定与外部成功验证。模型填写 verified 或 submitted 只是一条声明，不能代替测试。SWE-agent 的 submitted 状态也只说明提交路径，不保证产物正确。
+
+每消息单工具、工具执行并发和批次终止是独立取舍。不能把 Cline 的限制或 Pi 的整批 terminate 原样当成本项目要求。事件字段应按实际消费者设计；当前未增加 RunFinished 或“阻塞”完成工具。
+
+Aider 的编辑协议与有限纠错展示了原生工具调用之外的一条路径，可用于理解协议边界。本项目无需改换协议或新增重试机制来对齐它。工具结果继续使用 output/status/truncated，原稿“统一 metadata”并非已采纳契约。
 
 ## 未能确认的部分
 

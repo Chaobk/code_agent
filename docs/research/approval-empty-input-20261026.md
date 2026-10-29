@@ -6,7 +6,7 @@
 
 各项目没有统一的“Enter 必须拒绝”惯例。要区分文本框提交空字符串与选择列表确认高亮项。对本项目已有 `o / a / r` 文本输入，建议 **Enter 或纯空白直接返回 `r`**，并在提示中明确“Enter 默认拒绝”；`o / a` 才授权，其他非法文本保留三次重试。这是结合本项目交互形式的设计建议，不是声称业界一致如此。
 
-用户已选择审批时 EOF、Ctrl+C 均表示拒绝当前操作。该语义可以保留，但 `prompt.py` 的异常捕获不足以保证整条执行链一致：还需与 REPL 的 SIGINT/Task 取消协调。本文不实现该接线，也不据此宣称真实终端取消已验证。
+用户已选择审批时 EOF、Ctrl+C 均表示拒绝当前操作。2026-10-26 已实现审批读取期间临时切换 SIGINT 处理器并在 finally 恢复，避免同时触发 REPL 的运行取消；2026-10-27 真实终端复核获确认。具体证据见[计划历史](../plan-history.md)，本页的跨项目比较不是该实验的替代证据。
 
 ## Pi：选择列表的 Enter，不是文本空输入
 
@@ -18,7 +18,7 @@
 
 ## mini-swe-agent：Enter 明确批准本批操作
 
-`InteractiveAgent._ask_confirmation_or_interrupt` 明示 Enter 确认；经 `.strip()` 后的空字符串与 `/y` 都放行。其他评论拒绝本批并作为用户反馈，`/u` 拒绝并切到 human 模式。确认发生在执行 actions 之前，属于整批确认。[确认与批次执行](https://github.com/SWE-agent/mini-swe-agent/blob/main/src/minisweagent/agents/interactive.py#L115-L169)
+`InteractiveAgent._ask_confirmation_or_interrupt` 明示 Enter 确认；经 `.strip()` 后的空字符串批准本批；`/y` 批准并切换 yolo，影响后续确认。其他评论拒绝本批并作为用户反馈，`/u` 拒绝并切到 human 模式。确认发生在执行 actions 之前，属于整批确认。[确认与批次执行](https://github.com/SWE-agent/mini-swe-agent/blob/main/src/minisweagent/agents/interactive.py#L115-L169)
 
 `step()` 捕获 `KeyboardInterrupt` 后会再次询问用户评论或命令，再产生用户中断；因此不能把其 Ctrl+C 描述为直接返回一次普通拒绝。输入封装使用 `prompt_toolkit.PromptSession`；本次没有核实整个 CLI 对 EOF 的最终处理，也未做真实终端实验。[中断处理](https://github.com/SWE-agent/mini-swe-agent/blob/main/src/minisweagent/agents/interactive.py#L101-L114)、[输入封装](https://github.com/SWE-agent/mini-swe-agent/blob/main/src/minisweagent/agents/utils/prompt_user.py)
 
@@ -28,7 +28,7 @@
 
 官方权限文档给出 `once`、`always`、`reject` 三种结果，`always` 在本会话中批准匹配建议规则的后续请求。本次核查的文档未说明文本空输入、Enter 默认高亮或 Ctrl+C/EOF 的精确映射，故不据此推断。[What Ask Does](https://opencode.ai/docs/permissions/#what-ask-does)
 
-## 本项目的最小调整与测试规格
+## 已采纳的本项目行为与测试边界
 
 1. 提示改为：`[o] 仅本次允许    [a] 本会话允许此类操作    [r/Enter] 拒绝`。
 2. `raw.strip().lower()` 后，若为空立即返回 `r`；不消耗重试次数、不再次读取。

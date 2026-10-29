@@ -1,26 +1,26 @@
-# 任务结束信号研究（第一手部分：Pi / Roo Code）
+# 任务结束信号资料：Pi 文档与 Roo Code 线索
 
 > 本轮复核限定：已通过 Pi 官方 How Pi Works 与 Message Types 页面复核基本循环及消息字段；Roo 中文页面本轮无法访问，保留为原稿资料线索，未独立确认其官方归属或运行时行为。
 
 原稿标注研究日期为 2026-02-06，与其余报告日期不一致；原始采集日期未核实。本轮文档复核日期：2026-10-12。
-范围：**只记录我本人在本次会话中实际抓取到的官方页面**。Codex、OpenCode、Cline、Aider、SWE-agent 的源码研究由并行子代理完成，见同目录的 `completion-signal-codex.md`、`completion-signal-opencode.md`、`completion-signal-others.md`。
+范围：保留原核查读取的 Pi 官方文档，以及官方归属未确认的 Roo 中文资料线索。Codex、OpenCode、Cline、Aider、SWE-agent 的源码研究由并行子代理完成，见同目录的 `completion-signal-codex.md`、`completion-signal-opencode.md`、`completion-signal-others.md`。
 
 ## 来源限制（重要）
 
-本次会话的 `web_fetch` **无法访问 `github.com`、`raw.githubusercontent.com`、`api.github.com`**，报错为 "hostname resolves to a non-public IP address"。因此本文件不包含任何源码级引用，全部依据**官方文档站**：
+本次会话的 `web_fetch` **无法访问 `github.com`、`raw.githubusercontent.com`、`api.github.com`**，报错为 "hostname resolves to a non-public IP address"。因此本文件不包含任何源码级引用，来源分为官方文档和归属未确认的资料站：
 
 - Pi 官方文档站 `pi.dev`（来源仓库标为 `earendil-works/pi`，npm 包 `@earendil-works/pi-coding-agent`）
 - Roo Code 中文资料站 `docs.roocode.cn`（本轮未确认其官方归属）（Roo Code 是 Cline 的分支，工具同名，注意不能等同于 Cline 本体）
 
-凡本文件写出的类型名、字段名、事件名，都来自下面列出的、我实际抓取成功的页面。
+下面的字段摘录仅代表原核查页面，不能据此穷举整个系统。Pi 后续固定源码核查见 [Pi 设计研究](pi-coding-agent-design.md)；Roo 资料仍保留待核验状态。
 
-## 结论
+## 结论与证据范围
 
-1. **Pi 没有"任务完成工具"。** Pi 的 run 在"没有新的工具结果、也没有排队消息需要再请求一次模型"时自然结束。这是一个纯 ReAct 式的终止条件，与我们项目去掉 `END_TASK` 后的目标形态一致。
-2. **Pi 把"为什么结束"记在助手消息的 `stopReason` 上**，取值包含 `stop` / `toolUse` / `length` / `error` / `aborted`(以 `deferred`、`pending` 为流式/延迟态)。这与我们 `ToolStatus`/`finish_reason` 的分工相似：**结束原因是模型响应的属性，不是一个工具**。
-3. **Pi 不区分"任务成功"和"任务被阻塞"。** 会话/事件层没有任何 success/blocked 字段；只有 `agent_settled.aborted` 表示"这次 run 是被中止的"。也就是说，"任务是否真的成功"由外部证据（测试、diff）判断，而不是由 Agent 自己申报。
-4. **Roo Code 有显式完成工具 `attempt_completion`**，参数是 `result`(必需，总结) 与 `command`(可选，演示结果的 CLI 命令)。它的定位是**面向用户的收尾信号 + UI 呈现 + 反馈检查点**。仅凭该文档不能确定 Roo 的运行循环退出条件，更不能把该描述替代 Cline 不同版本的源码。
-5. 两种做法并存，但显式完成工具出现的场合有共性：**需要向用户明确宣告"我完成了"、需要特殊 UI、需要人给反馈**（具体交互还受版本、模式和自动批准配置影响，不能推断每次调用都必须人工确认）。
+Pi 文档描述模型响应、工具结果和队列驱动的循环；会话层还可能处理重试、压缩和续跑，因此 agent_end 与 agent_settled 含义不同。它们都不能证明用户目标已经达成。模型停止原因、底层运行结束与外部测试结果分别判断。
+
+没有在所读事件表看到 success/blocked 不能证明 Pi 所有扩展和运行路径都无法表达这些状态。默认完成工具、扩展工具和任务成功判定也不能混为一谈。
+
+Roo 中文资料提到 attempt_completion 的呈现与反馈用途，但官方归属和对应版本未独立确认。以下仅保留资料线索，不用它证明 Roo 或 Cline 当前运行时的字段、独占规则或审批行为。
 
 ## 证据
 
@@ -69,7 +69,7 @@ JSON 事件流的标准序列（节选）：
 
 来源：[JSON Event Stream](https://pi.dev/docs/latest/json)（实际抓取成功）
 
-**对 code_agent 的直接参照**：`tool_execution_end` 的字段构成（调用 ID + 工具名 + 结果 + 是否错误 + 耗时）正是我们 M2b 要给 `ToolResultEvent` 定的形状；`agent_settled` 的 `aborted` 布尔值对应我们 `RunFinished.reason` 想表达的"正常结束 vs 被中止"。
+对本项目的参照是结果关联和生命周期边界，不能逐字段照搬。当前 ToolResultEvent 携带调用关联与 ToolResult；运行结束通过 RunResult 和异常表达，RunFinished 已删除，耗时也不是当前事件的必需字段。
 
 ### Roo Code：`attempt_completion` 的参数与定位
 
@@ -77,25 +77,22 @@ JSON 事件流的标准序列（节选）：
 
 > "此工具通过展示最终完成工作的摘要来标志任务的结束。它向用户和系统发出信号，表明当前任务已完成。"
 
-关键限定条件（说明它依赖"每次一条工具调用"的对话模型）：
+该资料还记录了以下交互描述；这些描述不足以证明每消息单工具是运行时不变量：
 
 > "不应在确认之前的工具使用成功后再使用（**指南，非强制执行**）"
 > "命令在执行前需要用户批准"
 > "结果以特殊的 'completion_result' UI 格式出现，不同于普通消息"
 > "系统在呈现结果后等待用户反馈……这会创建一个迭代改进周期，而不是结束对话"
 
-来源：[Roo Code — attempt_completion](https://docs.roocode.cn/advanced-usage/available-tools/attempt-completion)（实际抓取成功）
+来源：[Roo Code — attempt_completion](https://docs.roocode.cn/advanced-usage/available-tools/attempt-completion)（原稿记录曾取得页面；后续复核未成功，官方归属未确认）
 
 同页还提到解析位于 `parse-assistant-message.ts`、该工具属于 `ALWAYS_AVAILABLE_TOOLS`——但**这些是文档对源码的转述，我没有读到源码本身**，仅作为线索记录。
 
-## 对 code_agent 的推论（属研究推论，不是上述项目的事实）
+## 对 code_agent 的推论
 
-1. `finish_task` 不是业界的默认做法。Pi 这类"让模型自己决定何时停"的循环，结束条件就是**模型不再请求工具**；我们现在的 `END_TASK` 文本标记反而比两者都弱——既没有 Pi 那样的 `stopReason` 承载结束原因，也没有显式完成工具的可校验参数。
-2. 显式完成工具的价值主要在**收尾语义**而非**循环终止**：它把"总结"和"状态"变成有 schema 的参数，可以被校验、可以回灌纠错、可以在 UI 上单独呈现。
-3. 因此我们需要的可能不是"结束工具"，而是两件分开的事：
-   - **循环终止**：模型一轮没有工具调用 → 正常结束是候选设计；M1 的已提交实现还要求 END_TASK 末行，主目录未提交实现正在移除这一条件；
-   - **收尾申报**：一个可选的、无副作用的申报动作，用来表达"完成/阻塞 + 总结"，供 CLI 呈现与退出码使用。
-4. Pi 不区分成功与阻塞，说明显式申报不是所有实现共有的机制；本项目是否需要它应根据自身需求判断。若采用 `finish_task`，它是我们对"CLI 需要一个明确收尾状态"的自主选择，应当在文档里写明理由，而不是声称"业界都这么做"。
+本项目已经采用正常 stop 且无工具调用结束，END_TASK 是普通文本；有调用先回灌观察。finish_task 属于按需增强，不能从少数案例推出行业统一要求。
+
+如未来增加完成/阻塞申报，schema 只能校验格式，任务是否完成仍需外部证据。回放、恢复和计划执行可以基于现有运行结果分别设计，不以完成工具为先决条件。[现行计划](../../PLAN.md)
 
 ## 未能确认的部分
 

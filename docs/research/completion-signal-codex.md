@@ -347,7 +347,7 @@ let idle_cause = if matches!(
 
 ### 6. 关于"结束调用能否与其他工具调用混在同一轮"
 
-**这个问题在 Codex 里不存在对应约束**，因为 Codex 没有结束调用（见第 1、3 节）。相反，Codex 明确支持一轮里出现多个工具调用：`OutputItemResult.tool_future` 是单个可选 future，v0.63.0 的 `try_run_turn` 则用 `FuturesOrdered` 收集多个工具的 future（L2136-L2137），并以 `supports_parallel_tool_calls`（L1989）与 `Feature::ParallelToolCalls`（L1992-L1999）作为并行开关（[codex.rs](https://fastly.jsdelivr.net/gh/openai/codex@rust-v0.63.0/codex-rs/core/src/codex.rs)）。所以准确的表述是：**"结束"在 Codex 语义里就是"这一轮采样没有任何工具调用"，它天然不可能与工具调用共存，因此无需（也确实没有）特殊校验。**
+**这个问题在 Codex 里不存在对应约束**，因为 Codex 没有结束调用（见第 1、3 节）。相反，Codex 明确支持一轮里出现多个工具调用：`OutputItemResult.tool_future` 是单个可选 future，v0.63.0 的 `try_run_turn` 则用 `FuturesOrdered` 收集多个工具的 future（L2136-L2137），并以 `supports_parallel_tool_calls`（L1989）与 `Feature::ParallelToolCalls`（L1992-L1999）作为并行开关（[codex.rs](https://fastly.jsdelivr.net/gh/openai/codex@rust-v0.63.0/codex-rs/core/src/codex.rs)）。已读路径没有本项目式的完成工具混用校验；实际续跑还取决于 pending input、Stop hook 等条件。因此“无工具调用”本身不是完整的会话结束判据。
 
 ---
 
@@ -356,7 +356,7 @@ let idle_cause = if matches!(
 > 以下是研究推论，不是 Codex 的事实。
 
 1. **`finish_task` 不是必需品，而是可选的设计权衡。** Codex 用"没有工具调用 ⇒ 结束"这一隐式信号，代价是：模型如果长文本说完却仍想继续做事、或在不该停的时候停下，循环无法区分。Codex 用另外的机制兜住这个代价——Stop hook（`run_turn_stop_hooks`，`should_block`/`should_stop` 可强制继续或停止）、pending input 续跑、token 超限自动压缩后 `continue`。code_agent 若要引入 `finish_task`，本质是在用显式工具换取"结束意图可被校验/可携带结构化结论"，这与 Codex 路线是两种不同取舍，不冲突。
-2. **若引入 `finish_task`，Codex 提示了一个必须处理的问题：成功与中止必须是两个独立维度。** Codex 用 `TurnComplete`（可带 `error`）与 `TurnAborted`（带 `reason`）两个事件区分"说完了"和"被打断"，并额外维护 `ThreadIdleCause::{Completed, Failed, Interrupted}`。code_agent 的 `events.py` 若只设计一个"结束事件"，就会丢掉这个区分；建议至少区分"正常结束/失败结束/被中断结束"。
+2. **若引入 `finish_task`，Codex 提示了一个必须处理的问题：成功与中止必须是两个独立维度。** Codex 用 `TurnComplete`（可带 `error`）与 `TurnAborted`（带 `reason`）两个事件区分"说完了"和"被打断"，并额外维护 `ThreadIdleCause::{Completed, Failed, Interrupted}`。本项目已经通过 RunResult 状态与原生异常表达不同结果，不需要再为此增加结束事件。
 3. **`finish_task` 与普通工具混在同一轮的限制，Codex 无法提供先例。** 由于 Codex 没有该工具，任何"finish_task 必须是本轮唯一调用"的规则都需要 code_agent 自己定，并自己写校验与测试；不能引用 Codex 作为依据。
 4. **协议层"结束"与"模型不再调用工具"是解耦的。** Codex 的做法值得借鉴：判定发生在 agent 循环内部（`needs_follow_up`），而"结束"作为**事件**从统一收尾点广播（`on_task_finished`），任务实现本身不负责发结束事件。这样 CLI、app-server、rollout 记录都从同一处拿到终止信号，不会出现某条路径漏发。code_agent 若把结束事件散落在各执行路径里，容易出现漏发或重发。
 5. **`task_complete` 这个名字在 Codex 里是事件而非工具**，如果 code_agent 文档或代码里出现 `task_complete`，要注意别把它当成工具名去接线。
@@ -373,4 +373,4 @@ let idle_cause = if matches!(
 6. **`TurnAbortReason` 的完整取值未逐一枚举**：经 gh-proxy 搜索确认 `enum TurnAbortReason` 的定义仍在 `codex-rs/protocol/src/protocol.rs`（另一处命中是 TUI 的 `chatwidget.rs`，属使用方）。但本文没有完整读取 `main` 版该枚举的定义全文，故 v0.63.0 的三值（`Interrupted`/`Replaced`/`ReviewEnded`）是确定值，`main` 的完整列表（已知至少还有 `BudgetLimited`）标注为不确定。
 7. **内置工具名清单不完整**：`spec_plan.rs` 的注册点给的是 **handler 类型名**（如 `ExecCommandHandler`），我没有逐一抓到每个 handler 对应的对外工具字符串名，因此本文只用类型名，未断言诸如 `shell`、`apply_patch` 之类的线上工具名。
 8. **未覆盖非 Rust 实现**：仓库内 `codex-cli/`（TypeScript）与 app-server 的客户端侧逻辑未纳入本次核查，"客户端如何消费 `task_complete` 事件"未确认。
-9. **`task_complete` 关键词的 18 处命中未逐条阅读**：搜索确认这些命中分布在 `codex-rs/docs/protocol_v1.md`、`tasks/review.rs`、`tui/src/chatwidget*.rs` 及其测试等文件，属事件名与消费方逻辑，**没有任何一处是工具定义**；但我没有逐条打开确认。
+9. **`task_complete` 关键词的 18 处命中未逐条阅读**：搜索确认这些命中分布在 `codex-rs/docs/protocol_v1.md`、`tasks/review.rs`、`tui/src/chatwidget*.rs` 及其测试等文件，属事件名与消费方逻辑，不能据搜索摘要判断每处是否为工具定义；这些命中未逐条打开，不用它证明全仓不存在完成工具。
