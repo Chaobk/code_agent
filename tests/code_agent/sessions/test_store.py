@@ -1,4 +1,4 @@
-"""单会话 JSONL 创建契约，文件副作用限定在临时目录。"""
+"""单会话 JSONL 创建与追加，文件副作用限定在临时目录。"""
 
 import json
 from dataclasses import replace
@@ -40,7 +40,6 @@ def test_create_writes_one_utf8_header_and_creates_parent_directory(
     assert raw.endswith(b"\n")
     assert len(raw.splitlines()) == 1
     assert json.loads(raw.decode("utf-8")) == {
-        "version": 1,
         "type": "session_start",
         "session_id": metadata.session_id,
         "title": metadata.title,
@@ -100,8 +99,13 @@ def test_create_propagates_open_failure_without_retrying(
 
 
 @pytest.mark.parametrize("operation", ["write", "flush"])
-def test_create_closes_file_and_propagates_recording_failure(
-    tmp_path: Path, metadata: SessionMetadata, monkeypatch: pytest.MonkeyPatch, operation: str
+@pytest.mark.parametrize("action", ["create", "append_message"])
+def test_recording_closes_file_and_propagates_failure(
+    tmp_path: Path,
+    metadata: SessionMetadata,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    action: str,
 ) -> None:
     error = OSError(f"{operation} 失败")
 
@@ -121,7 +125,11 @@ def test_create_closes_file_and_propagates_recording_failure(
     monkeypatch.setattr(Path, "open", open_file)
 
     with pytest.raises(OSError) as caught:
-        SessionStore(tmp_path).create(metadata)
+        store = SessionStore(tmp_path)
+        if action == "create":
+            store.create(metadata)
+        else:
+            store.append_message(metadata.session_id, {"role": "user", "content": "你好"})
 
     assert caught.value is error
     assert stream.closed
@@ -129,12 +137,29 @@ def test_create_closes_file_and_propagates_recording_failure(
 
 
 @pytest.mark.parametrize("session_id", ["../outside", "invalid", "0" * 32])
-def test_create_rejects_invalid_identity_before_creating_storage(
-    tmp_path: Path, metadata: SessionMetadata, session_id: str
+@pytest.mark.parametrize("action", ["create", "append_message"])
+def test_recording_rejects_invalid_identity_before_creating_storage(
+    tmp_path: Path, metadata: SessionMetadata, session_id: str, action: str
 ) -> None:
     root = tmp_path / "sessions"
 
     with pytest.raises(ValueError):
-        SessionStore(root).create(replace(metadata, session_id=session_id))
+        store = SessionStore(root)
+        if action == "create":
+            store.create(replace(metadata, session_id=session_id))
+        else:
+            store.append_message(session_id, {"role": "user", "content": "你好"})
 
     assert not root.exists()
+
+
+def test_append_creates_missing_file_in_existing_directory(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session_id = uuid4().hex
+    message = {"role": "user", "content": "你好"}
+
+    store.append_message(session_id, message)
+
+    raw = (tmp_path / f"{session_id}.jsonl").read_bytes()
+    assert raw.endswith(b"\n")
+    assert json.loads(raw) == {"type": "message", "message": message}

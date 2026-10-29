@@ -30,6 +30,7 @@ def scripted_cli(
         _env_file=None,
         DEEPSEEK_API_KEY="test-key",
         workspace_dir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
         bash_path="unused-bash",
     )
     client = FakeLLM(

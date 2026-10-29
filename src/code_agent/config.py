@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # 日志
     log_dir: Path = Field(default=Path(".code_agent/logs"), description="轨迹与日志目录")
 
+    # 会话记录集中存储，与工具工作目录分开
+    sessions_dir: Path = Field(
+        default_factory=lambda: Path.home() / ".codeagent" / "sessions",
+        description="会话 JSONL 存储目录，默认位于用户目录",
+    )
+
     # 工具执行环境
     workspace_dir: Path = Field(
         default_factory=Path.cwd,
