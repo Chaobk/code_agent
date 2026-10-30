@@ -169,3 +169,72 @@ def test_append_propagates_storage_failure_without_retrying(
 
     assert caught.value is error
     append.assert_called_once_with(header["session_id"], message)
+    assert manager.get_messages() == [message]
+    assert manager.storage_error is error
+
+
+def test_memory_only_manager_validates_messages_and_returns_independent_snapshots() -> None:
+    manager = SessionManager(Path.cwd(), None)
+    message = {"role": "user", "content": "原始消息"}
+    manager.append_message(message)
+    message["content"] = "调用方修改"
+    snapshot = manager.get_messages()
+    snapshot[0]["content"] = "快照修改"
+
+    assert manager.get_model_messages() == [{"role": "user", "content": "原始消息"}]
+    assert manager.get_pending_calls() == {}
+
+
+@pytest.mark.parametrize("role", ["invalid", "tool"])
+def test_invalid_message_does_not_reach_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
+    manager = SessionManager(tmp_path, tmp_path / "sessions")
+    append = Mock()
+    monkeypatch.setattr(SessionStore, "append_message", append)
+
+    with pytest.raises(ValueError):
+        manager.append_message({"role": role, "content": "无效消息"})
+
+    append.assert_not_called()
+    assert manager.get_messages() == []
+
+
+def test_failed_storage_keeps_facts_allows_settlement_and_blocks_new_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = SessionManager(tmp_path, tmp_path / "sessions")
+    assistant = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "first", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+            {"id": "second", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+        ],
+    }
+    manager.append_message(assistant)
+    pending = manager.get_pending_calls()
+    pending.clear()
+    assert set(manager.get_pending_calls()) == {"first", "second"}
+    error = OSError("磁盘不可写")
+    append = Mock(side_effect=error)
+    monkeypatch.setattr(SessionStore, "append_message", append)
+    first = {"role": "tool", "tool_call_id": "first", "content": "真实结果"}
+
+    with pytest.raises(OSError) as caught:
+        manager.append_message(first)
+    assert caught.value is error
+    second = {"role": "tool", "tool_call_id": "second", "content": "未启动"}
+    manager.append_message(second)
+
+    assert manager.get_messages() == [assistant, first, second]
+    assert manager.get_pending_calls() == {}
+    append.assert_called_once()
+    for operation in (
+        lambda: manager.append_message({"role": "user", "content": "新任务"}),
+        manager.get_model_messages,
+    ):
+        with pytest.raises(OSError) as blocked:
+            operation()
+        assert blocked.value is error
+    assert manager.get_messages() == [assistant, first, second]

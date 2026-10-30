@@ -186,8 +186,8 @@ async def test_cancelled_model_stream_can_resume_without_partial_history(
 
     assert result == 0
     assert [m["content"] for m in requests[1][1:]] == ["first", "next"]
-    assert agent.history.get_pending_calls() == {}
-    assert agent.history.get_model_messages()[-1]["content"] == "RECOVERED"
+    assert agent.session_manager.get_pending_calls() == {}
+    assert agent.session_manager.get_model_messages()[-1]["content"] == "RECOVERED"
     assert output.getvalue().count("运行已取消") == 1
     assert output.getvalue().count("UNCOMMITTED") == 1
     assert output.getvalue().count("RECOVERED") == 1

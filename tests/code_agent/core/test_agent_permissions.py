@@ -11,6 +11,7 @@ from code_agent.approval.policy import ApprovalPolicy
 from code_agent.core.agent import Agent
 from code_agent.events import RunResult, ToolCallEvent, ToolResult, ToolResultEvent, ToolStatus
 from code_agent.safety.permission import Decision
+from code_agent.sessions.manager import SessionManager
 from code_agent.tools.registry import ToolRegistry
 from code_agent.tools.spec import ToolSpec
 from tests.code_agent.core.test_agent import (
@@ -46,6 +47,7 @@ async def test_permission_decision_controls_execution_and_returns_paired_observa
         client,
         registry,
         workspace_dir=Path.cwd(),
+        session_manager=SessionManager(Path.cwd(), None),
         approval_gate=ApprovalGate(None if scenario == "unavailable" else prompt),
         approval_policies={} if scenario == "missing" else {"echo": policy},
     )
@@ -53,8 +55,8 @@ async def test_permission_decision_controls_execution_and_returns_paired_observa
 
     def observe(event: object) -> None:
         if isinstance(event, ToolResultEvent):
-            assert agent.history.get_pending_calls() == {}
-            assert agent.history.get_messages()[-1]["tool_call_id"] == event.tool_call_id
+            assert agent.session_manager.get_pending_calls() == {}
+            assert agent.session_manager.get_messages()[-1]["tool_call_id"] == event.tool_call_id
         events.append(event)
 
     assert await agent.run("call echo", on_event=observe) == RunResult(
@@ -93,7 +95,7 @@ async def test_permission_decision_controls_execution_and_returns_paired_observa
         policy.evaluate.assert_not_called()
     else:
         policy.evaluate.assert_called_once_with({"text": "hello", "repeat": 1})
-    assert agent.history.get_pending_calls() == {}
+    assert agent.session_manager.get_pending_calls() == {}
     assert capsys.readouterr().out == ""
 
 
@@ -118,6 +120,7 @@ async def test_gate_session_approval_survives_multiple_runs() -> None:
         client,
         registry,
         workspace_dir=Path.cwd(),
+        session_manager=SessionManager(Path.cwd(), None),
         approval_gate=ApprovalGate(prompt),
         approval_policies={"echo": policy},
     )
@@ -128,7 +131,7 @@ async def test_gate_session_approval_survives_multiple_runs() -> None:
     assert handler.await_count == 2
     assert policy.evaluate.call_count == 2
     prompt.assert_called_once()
-    assert agent.history.get_pending_calls() == {}
+    assert agent.session_manager.get_pending_calls() == {}
 
 
 @pytest.mark.parametrize("cancel", [True, False], ids=["cancelled", "internal-error"])
@@ -155,6 +158,7 @@ async def test_pre_execution_interruption_preserves_known_results_and_settles_un
         client,
         registry,
         workspace_dir=Path.cwd(),
+        session_manager=SessionManager(Path.cwd(), None),
         approval_gate=ApprovalGate(),
         approval_policies={"echo": policy},
     )
@@ -188,7 +192,9 @@ async def test_pre_execution_interruption_preserves_known_results_and_settles_un
 
     handler.assert_awaited_once_with(text="first", repeat=1)
     messages = [
-        message for message in agent.history.get_model_messages() if message["role"] == "tool"
+        message
+        for message in agent.session_manager.get_model_messages()
+        if message["role"] == "tool"
     ]
     assert [message["tool_call_id"] for message in messages] == ["first", "second", "third"]
     observations = [ToolResult.model_validate_json(message["content"]) for message in messages]
@@ -197,7 +203,7 @@ async def test_pre_execution_interruption_preserves_known_results_and_settles_un
         "not_started",
         "not_started",
     ]
-    assert agent.history.get_pending_calls() == {}
+    assert agent.session_manager.get_pending_calls() == {}
     assert len(client.requests) == 1
     assert await agent.run("continue") == RunResult(status="completed", text="recovered")
     assert handler.await_count == 1

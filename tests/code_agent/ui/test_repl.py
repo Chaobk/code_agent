@@ -114,7 +114,7 @@ class FakeLLM:
 async def test_two_runs_reuse_history_and_each_receive_full_step_budget(tmp_path: Path) -> None:
     client = FakeLLM()
     agent = make_agent(client, ToolRegistry(), max_steps=2, workspace_dir=tmp_path)
-    original_history = agent.history
+    original_history = agent.session_manager
     original_registry = agent.registry
     output = StringIO()
 
@@ -140,10 +140,10 @@ async def test_two_runs_reuse_history_and_each_receive_full_step_budget(tmp_path
     assert second_run[4]["content"] == "第1次完成"
     assert second_run[5]["content"] == "第二次任务"
     assert all(sum(message["role"] == "system" for message in req) == 1 for req in client.requests)
-    assert agent.history is original_history
+    assert agent.session_manager is original_history
     assert agent.registry is original_registry
     assert agent.workspace_dir == tmp_path.resolve()
-    assert agent.history.get_pending_calls() == {}
-    assert agent.history.get_model_messages()[-1]["content"] == "第2次完成"
+    assert agent.session_manager.get_pending_calls() == {}
+    assert agent.session_manager.get_model_messages()[-1]["content"] == "第2次完成"
     assert output.getvalue().count("第1次完成") == 1
     assert output.getvalue().count("第2次完成") == 1

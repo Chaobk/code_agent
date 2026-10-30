@@ -10,7 +10,6 @@ from openai import APIError
 from code_agent.approval.gate import ApprovalGate
 from code_agent.approval.policy import ApprovalPolicy
 from code_agent.config import Settings
-from code_agent.context.history import ConversationHistory
 from code_agent.events import (
     AnyEvent,
     Role,
@@ -59,7 +58,7 @@ class Agent:
         bash_path: str = "bash",
         approval_gate: ApprovalGate,
         approval_policies: Mapping[str, ApprovalPolicy],
-        session_manager: SessionManager | None = None,
+        session_manager: SessionManager,
     ):
         self.workspace_dir = workspace_dir.expanduser().resolve()
         self.client = client
@@ -79,10 +78,8 @@ class Agent:
         system_prompt = SYSTEM_PROMPT.format(
             workspace_dir=self.workspace_dir, tools=tool_description
         )
-        self.history = ConversationHistory(
-            save_message=session_manager.append_message if session_manager is not None else None
-        )
-        self.history.add_message({"role": "system", "content": system_prompt})
+        self.session_manager = session_manager
+        self.session_manager.append_message({"role": "system", "content": system_prompt})
 
         self.approval_gate = approval_gate
         self.approval_policies = dict(approval_policies)
@@ -130,63 +127,30 @@ class Agent:
     async def run(
         self, prompt: str, *, on_event: Callable[[AnyEvent], None] | None = None
     ) -> RunResult:
-        """直接执行请求与工具循环，所有退出统一结清已提交的调用。"""
+        """提交用户消息并推进模型循环，工具批次自行执行和收尾。"""
 
         def emit(event: AnyEvent) -> None:
             if on_event is not None:
                 on_event(event)
 
-        current_call_id: str | None = None
-        cancelled_observation: ToolResult | None = None
-        try:
-            self.history.add_message({"role": "user", "content": prompt})
-            for _ in range(self.max_steps):
-                turn = await self._request_turn(emit)
-                if isinstance(turn, RunResult):
-                    return turn
+        self.session_manager.append_message({"role": "user", "content": prompt})
+        for _ in range(self.max_steps):
+            turn = await self._request_turn(emit)
+            if isinstance(turn, RunResult):
+                return turn
 
-                self.history.add_message(turn.message)
-                tool_calls = turn.message.get("tool_calls") or []
-                for tool_call in tool_calls:
-                    call = ToolCall(
-                        id=tool_call["id"],
-                        name=tool_call["function"]["name"],
-                        arguments=tool_call["function"]["arguments"],
-                    )
+            tool_calls = turn.message.get("tool_calls") or []
+            await self._execute_calls(turn.message, emit)
 
-                    async def before_execute(
-                        name: str, args: dict[str, Any], *, call_id: str = call.id
-                    ) -> ToolResult | None:
-                        nonlocal current_call_id
+            if not tool_calls:
+                return RunResult(status="completed", text=turn.message["content"] or "")
 
-                        blocked = await self._before_tool_execute(name, args)
-                        if blocked is None:
-                            current_call_id = call_id
-
-                        return blocked
-
-                    emit(ToolCallEvent(tool_call=call))
-                    tool_result = await self.registry.execute(
-                        call.name, call.arguments, before_execute=before_execute
-                    )
-                    self._append_tool_result(call.id, tool_result)
-                    current_call_id = None
-                    emit(ToolResultEvent(tool_result=tool_result, tool_call_id=call.id))
-
-                if not tool_calls:
-                    return RunResult(status="completed", text=turn.message["content"] or "")
-
-            return RunResult(status="max_steps", error=f"达到最大请求轮数：{self.max_steps}")
-        except ToolExecutionCancelled as exc:
-            cancelled_observation = exc.observation
-            raise
-        finally:
-            self._settle_pending(current_call_id, cancelled_observation)
+        return RunResult(status="max_steps", error=f"达到最大请求轮数：{self.max_steps}")
 
     async def _request_turn(self, emit: Callable[[AnyEvent], None]) -> AssembledTurn | RunResult:
         """请求失败只在模型边界转换；显示回调和历史错误不在捕获范围内。"""
         assembler = TurnAssembler()
-        messages = self.history.get_model_messages()
+        messages = self.session_manager.get_model_messages()
         async with aclosing(self.client.stream_turn(messages, tools=self.tools)) as stream:
             while True:
                 try:
@@ -204,11 +168,51 @@ class Agent:
         except ModelProtocolError as exc:
             return RunResult(status="failed", error=f"{type(exc).__name__}: {exc}")
 
+    async def _execute_calls(
+        self, message: dict[str, Any], emit: Callable[[AnyEvent], None]
+    ) -> None:
+        """提交助手消息并顺序执行调用，异常或取消时统一结清本批观察。"""
+        current_call_id: str | None = None
+        cancelled_observation: ToolResult | None = None
+        try:
+            self.session_manager.append_message(message)
+            tool_calls = message.get("tool_calls") or []
+            for tool_call in tool_calls:
+                call = ToolCall(
+                    id=tool_call["id"],
+                    name=tool_call["function"]["name"],
+                    arguments=tool_call["function"]["arguments"],
+                )
+
+                async def before_execute(
+                    name: str, args: dict[str, Any], *, call_id: str = call.id
+                ) -> ToolResult | None:
+                    nonlocal current_call_id
+
+                    blocked = await self._before_tool_execute(name, args)
+                    if blocked is None:
+                        current_call_id = call_id
+
+                    return blocked
+
+                emit(ToolCallEvent(tool_call=call))
+                tool_result = await self.registry.execute(
+                    call.name, call.arguments, before_execute=before_execute
+                )
+                self._append_tool_result(call.id, tool_result)
+                current_call_id = None
+                emit(ToolResultEvent(tool_result=tool_result, tool_call_id=call.id))
+        except ToolExecutionCancelled as exc:
+            cancelled_observation = exc.observation
+            raise
+        finally:
+            self._settle_pending(current_call_id, cancelled_observation)
+
     def _settle_pending(
         self, current_call_id: str | None, observation: ToolResult | None = None
     ) -> None:
         """保留确定观察，补齐未知与未启动调用；收尾不再调用显示回调。"""
-        for pending_id in self.history.get_pending_calls():
+        for pending_id in self.session_manager.get_pending_calls():
             is_current = pending_id == current_call_id
             result = observation if is_current else None
             if result is None:
@@ -224,10 +228,16 @@ class Agent:
                         ),
                     },
                 )
-            self._append_tool_result(pending_id, result)
+            try:
+                self._append_tool_result(pending_id, result)
+            except Exception as exc:
+                # Manager 已保留本条观察并停止落盘，继续结算其他调用。
+                # 仅识别保存失败，保留批次正在传播的原始异常或取消。
+                if exc is not self.session_manager.storage_error:
+                    raise
 
     def _append_tool_result(self, call_id: str, result: ToolResult) -> None:
-        self.history.add_message(
+        self.session_manager.append_message(
             {"role": Role.TOOL.value, "tool_call_id": call_id, "content": result.model_dump_json()}
         )
 

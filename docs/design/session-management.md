@@ -6,7 +6,8 @@
 ## 职责与数据
 
 - `sessions/models.py`：`SessionMetadata` 保存 ID、标题、工作目录、创建和更新时间，不增加概述或重复的 History。
-- `sessions/manager.py`：`SessionManager` 绑定工作目录、管理当前会话及内部 Store，当前提供创建和追加消息。
+- `sessions/manager.py`：`SessionManager` 绑定工作目录，内部管理当前会话、History、Store 和保存失败状态；提供消息提交及历史快照读取。
+- `context/history.py`：纯内存的消息校验、快照和工具调用配对，由 Manager 持有；不提供保存回调。
 - `sessions/store.py`：`SessionStore` 是 Manager 内部的文件存储，不生成业务身份或调用模型；一会话一份 JSONL，元数据和消息共用该文件。
 - `core/`：创建并连接上述依赖，负责 Agent 运行、记录时机，以及 M5b 的恢复编排。
 - `ui/`：通过核心入口使用会话能力，不直接操作存储。
@@ -19,8 +20,9 @@
 构造 Manager 时就创建并保存新会话，无须单独调用 `create()`。
 用户决定当前暂不保存格式版本字段；版本兼容在实际需要时再设计。
 
-`SessionManager(workspace_dir, sessions_dir)`：绑定并规范化工作目录，在内部创建 Store，
-随后创建并保存一份新会话。初始化成功即有可追加消息的当前会话；Agent 无须接收 Store。
+`SessionManager(workspace_dir, sessions_dir)`：绑定并规范化工作目录，在内部创建 History 和 Store，
+随后创建并保存一份新会话。初始化成功即有可追加消息的当前会话；Agent 只持有 Manager。
+显式传入 `sessions_dir=None` 时使用纯内存会话，不创建 Store 或文件；CLI 始终传入配置路径。
 元数据保留在 Manager 内部；不再提供单独的 `create()` 方法。
 
 1. 创建发生在首次用户输入之前，此时不知道主题；title 为 None，不要求调用方提供标题。
@@ -29,16 +31,24 @@
 4. 构造元数据并调用一次内部 `store.create(metadata)`；保存成功后初始化结束。
 5. 存储异常原样传播，不自动重试，初始化失败时不返回可用 Manager。异常本身不能保证存储完全没有副作用，也不影响其他已有 Manager 的会话。
 
-`manager.append_message(message: dict[str, Any]) -> None`：使用当前会话 ID 调用内部 Store。
-初始化成功后可以直接追加；存储错误原样传播，不自动重试。
-消息记录保持现有历史字典结构，不转换成另一种工具调用格式，不重复维护 History。
+`manager.append_message(message: dict[str, Any]) -> None`：复制消息，由内部 History 校验并
+提交内存事实，随后使用当前会话 ID 调用 Store。校验失败不改内存或文件；保存失败时
+保留已提交内存事实，记录第一次异常并原样传播，不自动重试。消息保持现有字典格式。
+保存失败后的 Manager 禁止新对话和模型请求，只允许为已有 pending 调用追加合法工具
+结果以结清内存配对；这些收尾记录不再写文件。`storage_error` 可读取首次保存异常。
+文件可能已有部分写入，这不构成内存与文件的完整事务；损坏尾部读取规则待后续实现。
 
-`ConversationHistory(save_message=None)` 接收可选保存函数；核心传入
-`session_manager.append_message`，History 无须知道文件位置或 Store。
-`add_message()` 完成消息与工具配对校验后调用保存函数，成功后更新内存历史与配对状态。
-校验失败不调用保存；保存失败原样传播，当前消息和配对变更不提交到内存。
-文件可能已有部分写入，这不构成内存与文件的完整事务；Agent 在落盘失败后的收尾仍待完善。
-读取 History 不触发保存，不传回调时继续支持纯内存历史。
+`get_messages()` 和 `get_pending_calls()` 返回内部 History 的独立快照，故障后仍可读取。
+`get_model_messages()` 在会话保存健康且调用已配对时提供模型输入；读取均不触发保存。
+Agent 的 `session_manager` 为必填，不再创建 History，也不保留 `agent.history` 别名。
+
+核心执行流程按职责划分：`run()` 管理模型循环及结束判定，`_request_turn()` 负责
+模型流组装，`_execute_calls()` 负责一批工具的审批、执行、结果事件及配对收尾。
+当前调用和取消观察保留在工具批次内部；完整助手消息的提交也位于批次 try 内，保证
+调用记录保存失败时工具执行零次，并在 finally 统一结清为 not_started。
+工具结果保存失败时，其真实观察已在内存中，不再生成 unknown 覆盖；其余调用停止。
+收尾若遇到首次保存失败，Manager 保留该观察并关闭写入，批次继续补齐剩余内存配对，
+仅识别 Manager 记录的那个存储异常，不掩盖原始取消或工具故障。
 
 `SessionMetadata.title` 为 str 或 None，None 表示尚未命名，不把“新会话”当成真实标题保存。
 未来 UI 可显示 `title or "新会话"`，收到首条有效输入之后再考虑生成标题；本步没有接入
@@ -85,7 +95,8 @@ workspace_dir、created_at、updated_at。路径序列化为字符串，时间�
 
 运行：`.venv/Scripts/python.exe -B -m pytest tests/code_agent/sessions/test_manager.py -q -p no:cacheprovider`。
 先运行 Manager 测试，再运行 Store 测试；后者使用真实文件但不访问模型。
-创建与消息保存已通过核心和 History 接线；History 回调、无效消息不落盘、保存失败不提交内存，以及实际 JSONL 消息与历史一致已有测试。
-2026-10-30 完整回归 412 项通过、2 项因 Git Bash 环境跳过，Ruff 代码检查通过。
-落盘失败后的运行收尾、只读读取、加载、重命名与运行边界记录分别在后续小步完善，当前不代表
+消息保存由 Manager 协调；测试覆盖无效消息不落盘、保存失败保留内存事实、停止批次与续跑，
+以及取消收尾不重复写入或覆盖取消、实际 JSONL 消息与历史一致。
+2026-10-30 完整回归 413 项通过、2 项因 Git Bash 环境跳过，Ruff 检查通过。
+只读读取、加载、重命名与运行边界记录分别在后续小步完善，当前不代表
 完整 M5a 已完成或已获阶段验收。

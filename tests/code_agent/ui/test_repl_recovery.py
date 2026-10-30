@@ -76,7 +76,7 @@ async def test_failure_then_next_input_preserves_only_committed_history(
         ]
     )
     agent = make_agent(client, ToolRegistry(), max_steps=2, workspace_dir=tmp_path)
-    history = agent.history
+    history = agent.session_manager
     output = StringIO()
     result = await repl.run_session(
         agent,
@@ -84,7 +84,7 @@ async def test_failure_then_next_input_preserves_only_committed_history(
         console=Console(file=output, width=200),
     )
     assert result == 0
-    assert agent.history is history
+    assert agent.session_manager is history
     assert len(client.requests) == 3
     assert [m["content"] for m in client.requests[-1][1:]] == [
         "initial",
@@ -92,8 +92,10 @@ async def test_failure_then_next_input_preserves_only_committed_history(
         "broken",
         "next",
     ]
-    assert agent.history.get_pending_calls() == {}
-    assert all(m.get("content") != "UNCOMMITTED" for m in agent.history.get_model_messages())
+    assert agent.session_manager.get_pending_calls() == {}
+    assert all(
+        m.get("content") != "UNCOMMITTED" for m in agent.session_manager.get_model_messages()
+    )
     assert output.getvalue().count("STREAM_FAILED") == 1
     assert output.getvalue().count("RECOVERED") == 1
     assert output.getvalue().count("UNCOMMITTED") == int(partial)
@@ -130,8 +132,8 @@ async def test_exhausted_run_then_next_input_receives_full_step_budget(tmp_path:
     assert [m["tool_call_id"] for m in messages if m["role"] == "tool"] == ["first", "second"]
     assert messages[-1]["content"] == "next"
     assert sum(m["role"] == "system" for m in messages) == 1
-    assert agent.history.get_pending_calls() == {}
-    assert agent.history.get_model_messages()[-1]["content"] == "RECOVERED"
+    assert agent.session_manager.get_pending_calls() == {}
+    assert agent.session_manager.get_model_messages()[-1]["content"] == "RECOVERED"
     assert output.getvalue().count("达到最大请求轮数") == 1
     assert output.getvalue().count("RECOVERED") == 1
 

@@ -6,6 +6,7 @@ from typing import Any
 from code_agent.approval.gate import ApprovalGate
 from code_agent.core.agent import Agent
 from code_agent.safety.permission import Decision
+from code_agent.sessions.manager import SessionManager
 from code_agent.tools.registry import ToolRegistry
 
 
@@ -29,6 +30,8 @@ def make_agent(client: Any, registry: ToolRegistry | None = None, **kwargs: Any)
         if registry is not None
         else ["bash"]
     )
+    if "session_manager" not in kwargs:
+        kwargs["session_manager"] = SessionManager(kwargs["workspace_dir"], None)
     return Agent(
         client,
         registry,
