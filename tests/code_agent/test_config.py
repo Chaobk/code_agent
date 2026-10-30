@@ -14,6 +14,7 @@ _ENV_NAMES = (
     "CODE_AGENT_MAX_STEPS",
     "CODE_AGENT_REQUEST_TIMEOUT_SECONDS",
     "CODE_AGENT_LOG_DIR",
+    "CODE_AGENT_SESSIONS_DIR",
     "CODE_AGENT_WORKSPACE_DIR",
     "CODE_AGENT_BASH_PATH",
 )
@@ -52,6 +53,25 @@ def test_execution_environment_uses_code_agent_prefix(monkeypatch: pytest.Monkey
 
     assert settings.workspace_dir == workspace
     assert settings.bash_path == "configured-bash"
+
+
+def test_sessions_directory_defaults_to_user_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    assert _settings().sessions_dir == tmp_path / ".codeagent" / "sessions"
+    assert not (tmp_path / ".codeagent").exists()
+
+
+def test_sessions_directory_can_be_overridden(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "custom-sessions"
+    monkeypatch.setenv("CODE_AGENT_SESSIONS_DIR", str(directory))
+
+    assert _settings().sessions_dir == directory
 
 
 def test_workspace_default_is_evaluated_when_settings_are_loaded(

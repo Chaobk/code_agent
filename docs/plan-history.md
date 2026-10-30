@@ -2,6 +2,16 @@
 
 本文件保存从原计划迁出的历史验收、阶段规格和调整依据，供追溯时阅读。当前进度、有效契约和后续安排以 [PLAN.md](../PLAN.md) 为准；历史测试结果不表示当前工作区已经通过回归。M1 的 END_TASK 协议等旧规则仅用于复盘，已由后续决策替换。
 
+## 2026-10-28 会话管理分层与无标题创建
+
+- 用户确认新增 sessions/，由 SessionManager 处理会话业务、SessionStore 处理具体持久化，core 继续编排 Agent 与恢复。用户确认一会话一份 JSONL，元数据头、消息与后续元数据变更共用文件，不另建 metadata.json。
+- 首次输入前不知道会话主题，SessionMetadata.title 改为可空；Manager.create(workspace_dir) 不接受标题，生成 UUID4、规范化工作目录及带时区的创建/更新时间，保存成功后返回。用户明确授权本次由 Codex 完成并提交，后续默认协作分工保持。
+- Store 显式接收存储根目录，校验 UUID4 hex 身份，新建文件并保存 version=1、type=session_start 的元数据头，title 保存为 null；操作内使用 with、UTF-8、独立换行及 flush，已有文件不覆盖，存储错误原样传播且不重试。
+- 专项命令：`.venv/Scripts/python.exe -B -m pytest tests/code_agent/sessions -q -p no:cacheprovider --basetemp=artifacts/session-create-20261027-focused-01 --tb=short`，14 项通过。覆盖同目录独立会话、无标题实际保存、打开/写入/flush 失败与文件关闭，以及无效身份不创建存储。
+- 完整命令：`.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp=artifacts/session-create-20261028-full-02 --tb=short --maxfail=5 -o faulthandler_timeout=30`，394 项通过、2 项跳过。两项均为已有真实 Git Bash 回归，原因是 PATH 中的 Bash 不是带 sleep.exe 的 Git Bash；用该模块的 `-rs` 输出独立核实。模型请求由测试替身拦截，未访问真实模型。
+- 首次沙箱内完整回归停在已有首次异步 Agent 测试，清理本次测试进程后在沙箱外完成验证，未修改 Agent 或既有测试解决环境问题。`ruff check . --no-cache`、本次改动 Python 文件的格式检查与 `git diff --check` 通过。
+- 当前只实现创建与元数据头保存；配置/CLI/Agent 接线、消息追加、只读回放、加载、重命名和自动标题仍待后续实施，完整 M5a 未验收。此前 tracing/jsonl.py 的用户草稿保留，不纳入本次提交。
+
 ## 2026-10-27 M4c 基础交互真实终端复核
 
 - 用户确认接受基础交互小步结果，并开始 M5a；这不代表完整 M4c 或其他待验收阶段已获确认。

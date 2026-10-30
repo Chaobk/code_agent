@@ -26,6 +26,7 @@ from code_agent.events import (
 from code_agent.llm.client import LLMClient
 from code_agent.llm.streaming import AssembledTurn, ModelProtocolError, TurnAssembler
 from code_agent.safety.policy import resolve_execution_environment
+from code_agent.sessions.manager import SessionManager
 from code_agent.tools.builtin import create_builtin_registry
 from code_agent.tools.builtin.shell import BashApprovalPolicy
 from code_agent.tools.registry import ToolRegistry
@@ -58,6 +59,7 @@ class Agent:
         bash_path: str = "bash",
         approval_gate: ApprovalGate,
         approval_policies: Mapping[str, ApprovalPolicy],
+        session_manager: SessionManager | None = None,
     ):
         self.workspace_dir = workspace_dir.expanduser().resolve()
         self.client = client
@@ -77,7 +79,9 @@ class Agent:
         system_prompt = SYSTEM_PROMPT.format(
             workspace_dir=self.workspace_dir, tools=tool_description
         )
-        self.history = ConversationHistory()
+        self.history = ConversationHistory(
+            save_message=session_manager.append_message if session_manager is not None else None
+        )
         self.history.add_message({"role": "system", "content": system_prompt})
 
         self.approval_gate = approval_gate
@@ -238,6 +242,8 @@ def create_agent(
         workspace_dir=settings.workspace_dir, bash_path=settings.bash_path
     )
 
+    manager = SessionManager(env.workspace_dir, settings.sessions_dir)
+
     return Agent(
         LLMClient(settings),
         max_steps=settings.max_steps,
@@ -247,4 +253,5 @@ def create_agent(
         approval_policies={
             "bash": BashApprovalPolicy(),
         },
+        session_manager=manager,
     )

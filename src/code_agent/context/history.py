@@ -1,5 +1,6 @@
 """会话消息存储与工具调用配对校验。"""
 
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
@@ -9,9 +10,10 @@ from code_agent.events import ToolCall
 class ConversationHistory:
     """保存会话消息，并校验工具调用与结果的配对关系。"""
 
-    def __init__(self) -> None:
+    def __init__(self, save_message: Callable[[dict[str, Any]], None] | None = None) -> None:
         self._messages: list[dict[str, Any]] = []
         self._pending_calls: dict[str, ToolCall] = {}
+        self._save_message = save_message
 
     def add_message(self, message: dict[str, Any]) -> None:
         saved = deepcopy(message)
@@ -75,6 +77,8 @@ class ConversationHistory:
 
                 completed_id = call_id
 
+        if self._save_message is not None:
+            self._save_message(saved)
         self._messages.append(saved)
         self._pending_calls.update(new_calls)
 

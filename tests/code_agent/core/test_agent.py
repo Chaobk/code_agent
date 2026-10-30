@@ -1526,6 +1526,7 @@ async def test_create_agent_binds_resolved_paths_to_builtin_execution(
         _env_file=None,
         workspace_dir=Path("workspace") / "child" / "..",
         bash_path=executable.name,
+        sessions_dir=tmp_path / "sessions",
     )
     client = FakeLLM(
         [tool_response([tool_call(name="bash", arguments='{"command":"pwd"}')]), final_response()]
@@ -1539,6 +1540,16 @@ async def test_create_agent_binds_resolved_paths_to_builtin_execution(
     await agent.run("查看工作目录")
 
     assert agent.workspace_dir == workspace.resolve()
+    session_files = list(settings.sessions_dir.glob("*.jsonl"))
+    assert len(session_files) == 1
+    records = [
+        json.loads(line) for line in session_files[0].read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[0]["workspace_dir"] == str(workspace.resolve())
+    assert records[1:] == [
+        {"type": "message", "message": message} for message in agent.history.get_messages()
+    ]
+    assert not list(workspace.glob("*.jsonl"))
     assert str(workspace.resolve()) in client.requests[0]["messages"][0]["content"]
     handler.assert_awaited_once_with(
         command="pwd",

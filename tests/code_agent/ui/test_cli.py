@@ -66,6 +66,7 @@ def block_model_requests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     executable.touch()
     executable.chmod(0o700)
     monkeypatch.setenv("CODE_AGENT_WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setenv("CODE_AGENT_SESSIONS_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("CODE_AGENT_BASH_PATH", str(executable))
     monkeypatch.setenv("PATHEXT", ".EXE")
     monkeypatch.setattr(

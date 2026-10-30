@@ -1,6 +1,8 @@
 """会话历史测试：通过公开方法验证消息配对和快照隔离。"""
 
+from copy import deepcopy
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -211,3 +213,72 @@ def test_invalid_result_content_does_not_remove_pending_call() -> None:
 
     assert history.get_messages() == messages
     assert list(history.get_pending_calls()) == ["call_1"]
+
+
+def test_save_callback_receives_each_committed_message_once_in_order() -> None:
+    saved: list[dict[str, Any]] = []
+    history = ConversationHistory(save_message=lambda message: saved.append(deepcopy(message)))
+    messages = [
+        {"role": "user", "content": "检查项目"},
+        assistant_with_calls(tool_call("call_1")),
+        tool_result("call_1"),
+    ]
+
+    for message in messages:
+        history.add_message(message)
+    assert history.get_messages() == messages
+    assert history.get_model_messages() == messages
+    assert history.get_pending_calls() == {}
+    assert saved == messages
+    messages[0]["content"] = "调用方修改"
+    assert saved[0]["content"] == "检查项目"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "invalid", "content": "错误角色"},
+        assistant_with_calls(tool_call("duplicate"), tool_call("duplicate")),
+        tool_result("unknown"),
+    ],
+)
+def test_invalid_message_does_not_reach_save_callback(message: dict[str, Any]) -> None:
+    save = Mock()
+    history = ConversationHistory(save_message=save)
+
+    with pytest.raises(ValueError):
+        history.add_message(message)
+
+    save.assert_not_called()
+    assert history.get_messages() == []
+    assert history.get_pending_calls() == {}
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "user", "content": "新消息"},
+        assistant_with_calls(tool_call("call_1")),
+        tool_result("call_1"),
+    ],
+)
+def test_save_failure_leaves_history_and_pending_calls_unchanged(
+    message: dict[str, Any],
+) -> None:
+    save = Mock()
+    history = ConversationHistory(save_message=save)
+    if message["role"] == "tool":
+        history.add_message(assistant_with_calls(tool_call("call_1")))
+    previous = history.get_messages()
+    pending = history.get_pending_calls()
+    save.reset_mock()
+    error = OSError("保存失败")
+    save.side_effect = error
+
+    with pytest.raises(OSError) as caught:
+        history.add_message(message)
+
+    assert caught.value is error
+    save.assert_called_once_with(message)
+    assert history.get_messages() == previous
+    assert history.get_pending_calls() == pending
