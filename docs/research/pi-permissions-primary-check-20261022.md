@@ -9,7 +9,7 @@
 - coding-agent 的 `AgentSession` 把该接点连接到扩展的 `tool_call`，扩展收到 `toolName`、`toolCallId`、`input`，可返回阻止决定；具体策略和确认 UI 可以由扩展提供。受支持的嵌套 `ctx.executeTool()` 也重新经过接点。见 [AgentSession 接线](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/agent-session.ts#L609-L722)。
 - Pi 的扩展允许原地修改 `event.input`；这不是不可变审批契约。扩展还以 Pi 进程的 OS 权限运行，接点并不限制扩展任意发起的 I/O。见 [扩展返回类型](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L1351-L1359) 与 [扩展权限说明](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md#L1-L5)。
 
-对本项目的推论：采用统一 `before_execute` 合理；core 负责接线，safety 判断，UI 收集确认。所有受管理的工具调用须走同一入口；审批参数快照一致性应继续作为本项目自己的、更严格的约束。
+对本项目的推论：统一执行前接点有利于核查覆盖范围。当前已由 core 连接 `approval/` 的策略、Gate 和确认输入，Registry 在参数校验后调用接点。审批参数与执行参数一致性属于本项目自己的契约，不能从 Pi 的可变参数 hook 直接推出。
 
 ## 2. 已核实到文档层：模式、边界和网络分别控制
 
@@ -29,14 +29,14 @@ Pi 官方包目录保存的 `qings-pi-modes` 1.1.0 README 明确列出三条独�
 - Gatekeeper 的作者 README 和 `analyzer.ts` 支持结构化检测输出重定向、遍历复合命令、解析包装命令、检查动态命令名及按参数收紧白名单；解析出的 AST 有语法错误时会门控。这里的门控通常是请求用户批准，不等于最终 `deny`。见 [作者 README](https://github.com/noel-debug/pi-gatekeeper#how-it-works) 与 [分析器代码](https://github.com/noel-debug/pi-gatekeeper/blob/main/analyzer.ts)。
 - 必须收窄原笔记的 fail-closed 概括：解析器/WASM 初始化不可用时，该实现回退 `isGatedFallback(command)` 正则匹配；不是所有故障都无条件阻止。因此不能直接把其行为当成本项目的解析失败政策。见 [初始化与 analyzeCommand](https://github.com/noel-debug/pi-gatekeeper/blob/main/analyzer.ts)。
 - 作者也声明静态分析并不完美；AST 不证明任意脚本、解释器载荷和运行时副作用安全。[作者的局限说明](https://github.com/noel-debug/pi-gatekeeper#try-to-break-it)
-- Bash 本身按引用规则分词，再解析、展开、重定向和执行。因此，原笔记 §4.5 应改读为“按 shell 语法遍历”，不能落实成普通字符串 `split`；例如 `printf '%s\n' 'a|b'` 中的 `|` 是字面量，`cat file > target` 则含实际写入。后一结论是依据 [Bash 执行流程](https://www.gnu.org/software/bash/manual/html_node/Shell-Operation.html) 和 [引用规则](https://www.gnu.org/software/bash/manual/html_node/Quoting.html) 作出的设计推论。
+- Bash 本身按引用规则分词，再解析、展开、重定向和执行。因此，原稿的“按操作符拆分”应理解为按 shell 语法遍历，不能落实成普通字符串 `split`；例如 `printf '%s\n' 'a|b'` 中的 `|` 是字面量，`cat file > target` 则含实际写入。原探索稿已据此修订。此结论依据 [Bash 执行流程](https://www.gnu.org/software/bash/manual/html_node/Shell-Operation.html) 和 [引用规则](https://www.gnu.org/software/bash/manual/html_node/Quoting.html)。
 
 ## 4. 对 M4c 的建议与未核实项
 
 1. 采用统一执行入口，先校验参数，再综合工具动作与受信任权限上下文；扩展工具也不绕过。
 2. 宿主禁止项和模式硬约束先判定；规则、模型审查、普通确认都不能扩大授权。
-3. 保留草案的 Bash 独立模型审查选择；AST 可日后提供结构/资源线索，两者均不替代真实隔离。若引入 AST，解析器不可用或不支持语法时明确 ask / deny，不自动照搬正则回退并放行。
+3. Bash 独立模型审查是草案候选路线，尚未确定采用；当前沿用简单策略贯通流程。AST 可日后提供结构线索，两者均不替代真实隔离。若引入 AST，解析器不可用或不支持语法时明确 ask / deny，不自动照搬正则回退并放行。
 4. 无法确定命令符合只读约束时不执行；普通批准不能取消该约束。若允许例外，需要先通过受信任入口明确改变模式/授权。
 5. 只借鉴分层与接口扩展能力，不复制扩展的全部预设；真实 AgentMode 仍留在 M6，轨迹仍留在 M5。
 
-本次未核实 `pi-permission-suite`、`pi-ast-guard`、`pi-access-guard`，也未验证原笔记中“覆盖所有结构漏洞”“150–200 行完成”等断言；这些不能作为当前验收承诺。
+原稿中的“覆盖所有结构漏洞”“150–200 行完成”等断言没有验证依据，已从探索笔记移除。`pi-permission-suite`、`pi-ast-guard`、`pi-access-guard` 仍是未核实线索；本页的作者 README 和 main 链接也只是原核查时点的证据，不能作最新实现保证。

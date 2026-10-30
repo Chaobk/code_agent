@@ -233,14 +233,13 @@ export namespace Step {
 - code search：`"finish_task"` → `total_count: 0`；`"task_complete"` → `total_count: 0`；`filename:finish` → `total_count: 2`，两个都是 finish-reason 映射实现（`packages/core/src/github-copilot/chat/map-openai-compatible-finish-reason.ts`、`packages/core/src/github-copilot/responses/map-openai-responses-finish-reason.ts`）。
 - 官方 `agents.mdx` 里列出的权限键对应的工具名（`read`/`edit`/`glob`/`grep`/`list`/`bash`/`task`/`webfetch`/`websearch`/`lsp`/`skill`/`question`）里也没有任何 finish/done/submit 工具。
 
-## 对 code_agent 的推论
+## 对 code_agent 的推论与采纳边界
 
-1. **"模型不再发起工具调用"是可落地的循环结束判据，不证明任务目标达成。** OpenCode 把判据压缩成一个布尔 `needsContinuation`，并且放在 step 的返回值里，由最外层循环消费。`code_agent` 的 `finished`/`stop_reason` 可以照这个形状设计：不要引入 `finish_task` 工具，而是让循环在"本轮 assistant 消息里没有任何需要本地执行的 tool_call"时退出。这与 `AGENTS.md` 里"再整理事件和 `finish_task` 协议"的计划直接相关——**如果照抄 OpenCode，就不需要 `finish_task` 工具**，而是需要一个显式的结束原因字段。
-2. **把判据抽成显式布尔值，而不是散落在循环里的 `if`。** OpenCode 的做法是：step 产出 `Outcome.Completed({ needsContinuation })`，外层只判断这个布尔。`code_agent` 的 `core/` 循环可以对应地让一次 step 调用返回 `(needs_continuation, stop_reason)` 之类的结构化结果，避免 REPL 层重复推断。
-3. **把"上限触发"和"模型自发完成"显式区分开。** OpenCode 用 `toolChoice: "none"` + 注入提示词 `MAX_STEPS_PROMPT` 把上限转成"模型被迫用纯文本收尾"，因此上限命中时同样是 `needsContinuation === false`，但语义不同（用户看到的是一段总结和未完成清单）。`code_agent` 若保留"最大轮数"，建议也把上限收尾实现为"最后一轮禁用工具 + 注入收尾提示"，而不是直接抛异常中断，并在结束原因里区分 `completed` / `max_steps` / `interrupted` / `error`。
-4. **拒绝与中断要和完成区分开。** OpenCode 里用户拒绝任何一个工具调用会让整轮走 `Effect.interrupt`（`step.ts` 的 `if (tools.declines.length > 0) ... return yield* Effect.interrupt`），并且把被拒绝的 tool call 标记为 `{ type: "aborted" }`。`code_agent` 的"中断配对收尾"（AGENTS.md 提到的下一步）可以对齐这个语义：中断不是完成，被中断的 tool call 要有配对的失败/中止结果。
-5. **调用数量、执行并发和完成调用混用是三个独立设计。** OpenCode 的所研究实现按调用并发；code_agent 当前允许一轮多次调用但顺序执行。OpenCode 没有完成工具，不能由此推出另一个采用 finish_task 的系统应允许混用；该约束须由本项目单独定义。
-6. **完成信号用事件/类型命名，而不是靠日志文本。** 可借鉴的命名：`DrainResult.Complete`、`Outcome.Completed`、`needsContinuation`、`Step.Ended`、`Execution.Succeeded`，以及中断原因枚举 `["user", "shutdown", "superseded", "inactivity"]`。这些名字本身就是文档。
+所研究的 needsContinuation 表达本地调度是否继续，不能证明用户目标达成。本项目已经用无调用的正常 stop 返回 RunResult，未采用额外完成工具；请求轮数耗尽直接返回 max_steps。[现行运行流程](../design/run-flow.md)
+
+OpenCode 的禁工具总结请求和拒绝后中断属于该快照的行为，不能直接变成本项目要求。本项目普通权限拒绝生成未执行的观察，模型在剩余轮数内可继续；运行取消则补齐历史并传播取消。
+
+允许多个调用、并行执行和完成工具混用是三个独立问题。本项目保持顺序执行，并由核心公开结果与异常表达结束，UI 不从渲染事件反推状态。原稿关于再新增 step 布尔、RunFinished 或改上限收尾的建议未被采纳，不再作为实施步骤。
 
 ## 未能确认的部分
 

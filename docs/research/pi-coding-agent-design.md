@@ -6,6 +6,8 @@
 >
 > 阅读方法：**上游事实**以这个快照的文档、实现和测试为依据；**历史观点**单独标明日期；**本项目建议**是研究后的推导。所有伪代码均为自写的等价逻辑简化，用于解释契约，不是可直接运行的 Pi 或本项目实现。未安装、运行 Pi，也未执行真实模型或 Docker 评测。
 
+2026-10-28 修订项目状态、预算示意和接口迁移建议；上游仍以原固定提交为研究对象，本次只抽查循环源码，未将全篇结论重新验证为最新 Pi 行为。
+
 ## 阅读导航
 
 遇到具体故障可先读“本项目问题对照”；理解实现时按循环、上下文、工具、模式与评测的顺序阅读。
@@ -262,11 +264,15 @@ def build_model_input(history, system, goal, memories, knowledge, budget):
     required = select_required(system, goal, current_constraints(groups))
     if estimate(required) > budget:
         raise RequiredContextTooLarge()
-    selected = fit_recent_groups(groups, budget_after(required))
-    selected = add_ranked_sources(selected, memories, knowledge, budget)
+    remaining = budget - estimate(required)
+    selected = fit_recent_groups(exclude_already_selected(groups, required), remaining)
+    remaining -= estimate(selected)
+    sources = select_ranked_sources(memories, knowledge, remaining)
     assert valid_tool_pairs(selected)
-    assert estimate(required + selected) <= budget
-    return required + selected
+    model_input = required + selected + sources
+    assert valid_tool_pairs(model_input)
+    assert estimate(model_input) <= budget
+    return model_input
 ```
 
 这段是供本项目后续设计的伪代码，不是 Pi 原实现，也不约定新的公开接口。实际预算必须统一计入系统提示、工具 schema、本次新输入、历史、记忆、检索内容与回复预留。字符估算并非服务商精确 token 计数，仍需处理真实 overflow；首版可先确定性裁剪，再比较摘要策略。对应 [PLAN M6](../../PLAN.md)。
@@ -501,7 +507,7 @@ RPC 客户端先监听再 prompt；命令响应只报告接受、入队或由扩
 
 `turn_end` 和 `agent_before_settle` 会让后续 handler 看到前序提出的 entries 与 continue 决定，最终统一验证并提交。无条件要求继续可能造成无限循环，因此条件必须可收敛。`tool_call` 首个 block 停止后续 handler；`tool_result` 的多层改写则继续组合，异常会报告但其 fail-closed 语义与前者不同。[boundary 组合](https://github.com/earendil-works/pi/blob/be14d9732f98fcc33929cf103a92b96afaa6523e/packages/coding-agent/src/core/extensions/runner.ts#L1036-L1084)、[结果与调用 hook](https://github.com/earendil-works/pi/blob/be14d9732f98fcc33929cf103a92b96afaa6523e/packages/coding-agent/src/core/extensions/runner.ts#L1190-L1267)
 
-**本项目建议：**先定义少数真正需要的接口，例如 `before_execute` 与完成事件，再让能力模块通过契约接入核心。不要复制完整插件平台；每个可变接点都增加顺序、异常、取消、持久化与测试成本。
+**本项目建议：**保留少数真正需要的接点：`before_execute` 用于执行前检查，`RunResult` 与异常表示本次运行结束，三类进度事件负责显示。M5a 的已提交消息回调按独立规格接入，不为模仿上游另加完成事件。每个可变接点都增加顺序、异常、取消、持久化与测试成本。
 
 ## MCP 与 codemode：工具很多时如何控制上下文和执行
 
@@ -628,7 +634,7 @@ else:
 
 ## 遇到问题时怎么查：本项目问题与 Pi 机制对照
 
-本节项目事实依据本次读取的 `code_agent` 工作区：基线 HEAD 为 `3a1cfdbe0202fba1b17de034f3bdcf5c7582f1c4`；`docs/design/m4c-permissions.md` 已有未提交设计修改。M4b 仍待用户确认，M4c 尚未接入，M5–M8 是计划能力。以下研究建议不改变 [PLAN.md](../../PLAN.md) 的有效契约、实施顺序与分工。
+本节最初依据 2026-10-22 的工作区（基线 HEAD 为 `3a1cfdbe0202fba1b17de034f3bdcf5c7582f1c4`）。2026-10-28 已按当前源码和计划更新对照：M4c 基础策略与审批已接入、基础交互复核获确认，完整 M4c 未验收；M5a 正在实施，其余 M5–M8 能力仍按计划推进。以下链接用于定位现行代码，历史实验与阶段确认仍以 [PLAN.md](../../PLAN.md) 和[计划历史](../plan-history.md)为准。
 
 | 问题/触发 | 本项目当前证据入口 | Pi 中该读什么 | 采用时的判断 |
 | --- | --- | --- | --- |
@@ -642,7 +648,7 @@ else:
 | Git Bash 取消后读管道迟迟没有 EOF | [真实故障](../design/m4b-git-bash-cancellation.md)、[shell.py](../../src/code_agent/tools/builtin/shell.py) | Bash abort、进程树清理 | 必须在目标 Windows/MSYS 环境验证；别用 POSIX 或 taskkill 代码代替现有真实信号证据 |
 | 输出过大占内存，截断后丢失报错末尾 | `collect_output`、[工具预算契约](../../PLAN.md) | output accumulator、截尾与完整输出文件 | 保留超额仍排空；可比较头/尾/文件引用，但不把字符上限改叫 token 上限 |
 | `cd/export` 为什么不跨调用保留？ | [系统提示与 Bash](../../src/code_agent/core/agent.py) | 每次执行的 cwd/env 绑定 | 这是执行环境契约，应明确告知模型；不要隐式引入持久 shell |
-| schema 合法是否等于允许执行？ | [M4c 设计草案](../design/m4c-permissions.md) | 参数验证、`tool_call` 拦截、project trust | 参数、权限、审批、OS 隔离分层；Pi hook 不是本项目已完成的权限系统 |
+| schema 合法是否等于允许执行？ | [审批协调](../../src/code_agent/approval/gate.py)、[执行前接点](../../src/code_agent/tools/registry.py) | 参数验证、`tool_call` 拦截、project trust | 基础审批已接线，命令解析与授权范围仍需完善；本项目与 Pi 的应用权限都不等于 OS 隔离 |
 | 计划阶段允许哪些操作？ | [PLAN M6b](../../PLAN.md) | plan-mode 扩展示例 | 决策模式与权限决定分别绑定；示例 Bash 正则不能证明只读，额外 MCP/custom 工具也要检查 |
 | 恢复聊天是否会恢复文件/重跑工具？ | [PLAN M5b](../../PLAN.md) | SessionManager、独立 Durable replay | 会话恢复不撤销外部文件；首版只恢复完整检查点，不采纳任意重放 |
 | 恢复配置时会不会把 API key 一起落盘？ | [Settings](../../src/code_agent/config.py)、M5b 白名单约束 | session entry、模型选择与凭据存储分离 | 白名单保存非敏感配置；凭据从当前环境加载，不能直接 dump Settings |
@@ -686,7 +692,7 @@ Pi 新版默认并行工具，需要额外管理预检、并发副作用、结�
 
 **多 Agent 的收益需要做消融。** 并行阅读可以降低墙钟时间，也会增加重复读取、交接损失和结论冲突；子 Agent 的正常退出只能证明完成了本地运行，不能证明答案正确。主 Agent 用证据进行合并，比再加一个无证据的“裁判投票”更适合当前 M8。
 
-**权限要跟着实际执行路径走。** 主模型、子 Agent、MCP 和 codemode 都可能触发工具；如果只有模型直接调用经过检查，嵌套工具会形成旁路。应先定义核心绑定的授权上下文、规范化参数和 handler 前唯一检查接点，再考虑具体审批器。具体方案仍以 [M4c 草案](../design/m4c-permissions.md) 后续确认版本为准。
+**权限要跟着实际执行路径走。** 主模型、子 Agent、MCP 和 codemode 都可能触发工具；如果只有模型直接调用经过检查，嵌套工具会形成旁路。本项目已有参数校验后的执行前接点；后续新增入口应验证能否复用它。有效要求以 [PLAN.md](../../PLAN.md) 为准，[M4c 设计参考](../design/m4c-permissions.md) 中尚未采纳的动作模型和裁判方案不自动成为实现要求。
 
 **终止与成功分别记录。** `模型 stop`、`工具 completed`、`运行 idle`、`任务通过外部验证` 分别回答不同问题。日志/评测可以同时记录 `run_status` 与 `task_verdict`；不要用一个 success 布尔值吞掉模型错误、环境阻塞、取消与任务失败。
 

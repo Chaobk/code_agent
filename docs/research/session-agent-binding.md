@@ -22,12 +22,12 @@
 
 历史记录按会话归属：`MessageTable.session_id` 关联 `SessionTable.id`，消息片段也保存 `session_id`。Session 表可以保存当前选用的 Agent 名称，但这个字段不是历史记录的归属主键。[会话和消息存储](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/session/sql.ts#L48-L92)
 
-创建用户消息时，`createUserMessage` 根据 `input.agent` 或默认配置找到 Agent，把名称记录到这条用户消息。若当前 session 保存的 Agent/模型不同，还会更新 session 的当前选择。运行循环以 `sessionID` 读取经过压缩过滤的历史，再用最近用户消息的 `agent` 查找本轮执行配置。助手消息同时记录 `sessionID` 和 Agent 名称。这些步骤支持保留同一会话历史并更换执行角色。[选择并记录 Agent](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/prompt.ts#L600-L650)、[读取历史](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/prompt.ts#L1027-L1041)、[执行角色选择](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/prompt.ts#L1108-L1137)
+以下旧 packages/opencode 路径与上面的 packages/core 链接没有固定到同一提交，因此只作为原核查的调用链线索，不把它们拼成同一版本的完整证明。原记录中，创建用户消息时，`createUserMessage` 根据 `input.agent` 或默认配置找到 Agent，把名称记录到这条用户消息。若当前 session 保存的 Agent/模型不同，还会更新 session 的当前选择。运行循环以 `sessionID` 读取经过压缩过滤的历史，再用最近用户消息的 `agent` 查找本轮执行配置。助手消息同时记录 `sessionID` 和 Agent 名称。这些步骤支持保留同一会话历史并更换执行角色。[选择并记录 Agent](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/prompt.ts#L600-L650)、[读取历史](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/prompt.ts#L1027-L1041)、[执行角色选择](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/prompt.ts#L1108-L1137)
 
 Task 工具按 `subagent_type` 找角色；首次调用通常创建带 `parentID` 的子 session，指定 `task_id` 时可恢复已有 session。随后调用 prompt 时传入子 session ID 与该角色名称。子任务因此有自己的历史归属，而不是把所有子 Agent 的原始对话混入父会话。[Task 工具创建/复用子会话](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/task.ts#L120-L160)、[运行子会话](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/task.ts#L182-L196)
 
 ## 对当前学习项目的推论
 
-下列为设计建议，并非 OpenCode 的 Python 类设计：当前 `Agent` 同时负责执行循环并持有会话状态，所以让一个会话由一个 Agent 运行实例维护、在初始化时注入独立的 `History`，是合理的简化。不同会话不能共享同一个可变 History，连续多个 `run()` 可沿用同一份历史。
+下列为设计建议，并非 OpenCode 的 Python 类设计：当前 `Agent` 同时负责执行循环并持有会话状态，所以让一个会话由一个 Agent 运行实例维护、在初始化时注入独立的 `History`，是合理的简化。不同会话应保持独立的可变 History，连续多个 `run()` 可沿用同一份历史；同一 Agent 的 run 也不因此可并发调用。逻辑归属与对象是否物理共享是不同问题，持久存储和不可变快照可以按显式接口复用。
 
 这不意味着同一份角色配置只能服务一个会话，也不意味着以后切换 Plan/Build 必须清空历史。未来需要多角色时，可以复用模型、工具与角色配置，同时保持会话历史和当前运行状态独立。当前不需要为此提前新增 Session 管理器或角色抽象。

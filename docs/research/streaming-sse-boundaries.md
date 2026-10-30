@@ -2,7 +2,7 @@
 
 研究与核查日期：2026-10-13。本文整理学习 Chat Completions 流式响应时提出的问题，范围包括响应体分块、SSE 事件解析、JSON 提取和工具调用组装。以 Python、HTTPX 和 OpenAI 兼容 Chat Completions 为示例；不把这一接口的字段推广到所有模型 API。
 
-本文是学习笔记，示例没有接入应用，也不要求项目改用原始 HTTP。当前项目继续采用 LiteLLM 薄封装，M2b 的核心实现由用户手写；有关提交、执行与取消边界，以 [PLAN.md](../../PLAN.md) 为准。
+本文是学习笔记，示例没有接入应用，也不要求项目改用原始 HTTP。项目于 2026-10-26 迁移为 OpenAI SDK 薄封装；M2b 已验收，核心仍保留流式组装与提交边界；有关提交、执行与取消边界，以 [PLAN.md](../../PLAN.md) 为准。
 
 ## 1. 原问题与直接结论
 
@@ -227,7 +227,7 @@ if choices:
     text = delta.get("content")
 ```
 
-若使用 LiteLLM/服务商 SDK，通常已经得到解析后的对象，对应写法是 `chunk.choices[0].delta.content`。属性读取与字典读取的差别，来自 SDK 类型包装，不来自模型输出文字本身。
+若使用模型 SDK，通常已经得到解析后的对象，对应写法是 `chunk.choices[0].delta.content`。属性读取与字典读取的差别，来自 SDK 类型包装，不来自模型输出文字本身。
 
 空 `choices` 是 OpenAI 兼容实现或 SDK 中需要防御的情况，例如某些用量分片；不要把它说成所有供应商的统一尾片结构。本文不固定 DeepSeek 用量片的位置与 choices 形状，应按当前服务和 SDK 实际协议确认。
 
@@ -329,11 +329,11 @@ calls_by_index = {
 
 ## 7. 三种处理方案
 
-### 方案 A：继续使用 SDK 或 LiteLLM
+### 方案 A：使用模型 SDK（本项目现行路径）
 
 适合主要学习 Agent 业务编排的项目。SDK 负责 HTTP、响应解码、SSE 与 JSON 包装，核心负责累积正文、工具调用结构校验、历史提交和调用执行。
 
-当前 code_agent 的 M2b 按这个方案推进。本文对底层解析的解释用于理解和实验，不增加更换模型接入库的任务。[项目当前模型边界](../../PLAN.md)
+当前 code_agent 由 OpenAI SDK 处理传输与 SSE，TurnAssembler 处理响应组装。本文底层示例仍用于学习，不是当前应用的 HTTP 客户端。[项目当前模型边界](../../PLAN.md)
 
 ### 方案 B：HTTPX 配合 SSE 库
 
@@ -538,7 +538,7 @@ async def read_chat_stream(response):
     # 此后还需由组装器检查整轮结构，才可提交消息与执行工具。
 ```
 
-这里 `[DONE]` 的检查是**原始 Chat Completions 客户端的协议检查**，不意味着当前 LiteLLM 核心要读取字面字符串。SDK 可能消费该标记并直接结束迭代。另一种 API 也可能使用不同结束事件，不能照搬。
+这里 `[DONE]` 的检查是**原始 Chat Completions 客户端的协议检查**，不意味着当前应用核心要读取字面字符串。SDK 可能消费该标记并直接结束迭代。另一种 API 也可能使用不同结束事件，不能照搬。
 
 实际请求应通过 `async with client.stream(...)` 管理响应，先验证 HTTP 状态及 Content-Type，再开始数据解释。需要根据服务设置请求/读取超时，区分状态错误、读取中断、取消、SSE 格式错误与 JSON/工具参数错误。不要把返回的错误 HTML 页面送入 JSON 解析器后仅报告“模型 JSON 错误”。[HTTPX stream 与响应关闭](https://www.python-httpx.org/async/#streaming-responses)
 
