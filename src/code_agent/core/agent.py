@@ -10,6 +10,7 @@ from openai import APIError
 from code_agent.approval.gate import ApprovalGate
 from code_agent.approval.policy import ApprovalPolicy
 from code_agent.config import Settings
+from code_agent.core.run_recording import record_run
 from code_agent.events import (
     AnyEvent,
     Role,
@@ -124,6 +125,7 @@ class Agent:
 
         return None
 
+    @record_run
     async def run(
         self, prompt: str, *, on_event: Callable[[AnyEvent], None] | None = None
     ) -> RunResult:

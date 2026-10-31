@@ -21,6 +21,7 @@ class SessionManager:
         self._history = ConversationHistory()
         self._store = SessionStore(sessions_dir) if sessions_dir is not None else None
         self._storage_error: Exception | None = None
+        self._active_run_id: str | None = None
         now = datetime.now(UTC)
         self._metadata = SessionMetadata(
             session_id=uuid4().hex,
@@ -31,6 +32,34 @@ class SessionManager:
         )
         if self._store is not None:
             self._store.create(self._metadata)
+
+    def start_run(self) -> str:
+        """保存运行开始；同一会话不允许并发运行。"""
+        if self._storage_error is not None:
+            raise self._storage_error
+        if self._active_run_id is not None:
+            raise RuntimeError("会话已有运行进行中")
+        run_id = uuid4().hex
+        self._append_record({"type": "run_start", "run_id": run_id})
+        self._active_run_id = run_id
+        return run_id
+
+    def end_run(self, run_id: str, *, status: str, error: str | None) -> None:
+        """保存与当前运行匹配的终态。"""
+        if self._storage_error is not None:
+            raise self._storage_error
+        if run_id != self._active_run_id or self._active_run_id is None:
+            raise ValueError("运行 ID 与当前运行不匹配")
+        self._append_record({"type": "run_end", "run_id": run_id, "status": status, "error": error})
+        self._active_run_id = None
+
+    def _append_record(self, record: dict[str, Any]) -> None:
+        if self._store is not None:
+            try:
+                self._store.append_record(self._metadata.session_id, record)
+            except Exception as exc:
+                self._storage_error = exc
+                raise
 
     def append_message(self, message: dict[str, Any]) -> None:
         """先校验并保留内存事实，再保存；文件失败后只允许内存工具收尾。"""

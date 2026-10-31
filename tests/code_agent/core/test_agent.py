@@ -1556,7 +1556,7 @@ async def test_create_agent_binds_resolved_paths_to_builtin_execution(
 
     agent = agent_module.create_agent(settings)
     monkeypatch.setenv("PATH", "")
-    await agent.run("查看工作目录")
+    result = await agent.run("查看工作目录")
 
     assert agent.workspace_dir == workspace.resolve()
     session_files = list(settings.sessions_dir.glob("*.jsonl"))
@@ -1565,9 +1565,22 @@ async def test_create_agent_binds_resolved_paths_to_builtin_execution(
         json.loads(line) for line in session_files[0].read_text(encoding="utf-8").splitlines()
     ]
     assert records[0]["workspace_dir"] == str(workspace.resolve())
-    assert records[1:] == [
+    assert [record for record in records[1:] if record["type"] == "message"] == [
         {"type": "message", "message": message} for message in agent.session_manager.get_messages()
     ]
+    assert [record["type"] for record in records if record["type"].startswith("run_")] == [
+        "run_start", "run_end"
+    ]
+    assert [record["type"] for record in records] == [
+        "session_start", "message", "run_start", "message", "message", "message", "message",
+        "run_end",
+    ]
+    assert records[2]["run_id"] == records[-1]["run_id"]
+    assert records[-2]["message"]["role"] == "assistant"
+    assert records[-2]["message"]["content"] == result.text
+    assert records[-1] == {
+        "type": "run_end", "run_id": records[2]["run_id"], "status": "completed", "error": None
+    }
     assert not list(workspace.glob("*.jsonl"))
     assert str(workspace.resolve()) in client.requests[0]["messages"][0]["content"]
     handler.assert_awaited_once_with(

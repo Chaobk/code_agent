@@ -43,8 +43,11 @@ class SessionStore:
 
     def append_message(self, session_id: str, message: dict[str, Any]) -> None:
         """追加一条消息并 flush；使用 a 模式，错误原样传播。"""
+        self.append_record(session_id, {"type": "message", "message": message})
+
+    def append_record(self, session_id: str, record: dict[str, Any]) -> None:
+        """追加一条 JSONL 记录并 flush。"""
         path = self._session_path(session_id)
-        record = {"type": "message", "message": message}
         line = json.dumps(record, ensure_ascii=False) + "\n"
         with path.open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(line)
